@@ -34,69 +34,72 @@ def get_font(size):
     return ImageFont.load_default()
 
 def fetch_page_info(url):
-    """ウェブサイトからテキストを解析し、サイトマップ等の不要語を除外して抽出する関数"""
+    """記事本文エリアを特定して精度高くタイトル・主催・日時・場所を抽出する関数"""
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         res = requests.get(url, headers=headers, timeout=5)
         res.encoding = res.apparent_encoding
         soup = BeautifulSoup(res.text, 'html.parser')
 
-        text = soup.get_text()
-        
-        # --- タイトルの取得とクレンジング ---
+        # --- 1. 記事メインエリアの特定 ---
+        # サイト共通のヘッダー・フッター・サイドバーを排除するため、メイン記事枠を探す
+        main_content = soup.find('article') or soup.find(class_=re.compile(r'entry-content|post-content|main|content'))
+        if not main_content:
+            main_content = soup
+
+        # --- 2. タイトルの抽出 ---
         title = ""
-        # h1タグなどのメイン見出しがあれば優先取得
-        h1_tag = soup.find('h1')
-        if h1_tag and h1_tag.string:
-            title = h1_tag.string.strip()
+        # 記事内のh1/h2タグ、または特定のタイトルクラスを探す
+        title_tag = soup.find(['h1', 'h2'], class_=re.compile(r'entry-title|post-title|title')) or main_content.find(['h1', 'h2'])
+        
+        if title_tag and title_tag.get_text(strip=True):
+            title = title_tag.get_text(strip=True)
         elif soup.title and soup.title.string:
             title = soup.title.string.strip()
 
-        # 区切り文字以降（サイト名など）の除去
+        # サイト名や「研修会情報」「お知らせ」などのカテゴリ汎用名の除外
         title = re.sub(r'[\-|\||│].*$', '', title).strip()
-        # 「サイトマップ」等の不要文字列を除去
-        title = re.sub(r'サイトマップ|sitemap|Sitemap', '', title, flags=re.IGNORECASE).strip()
+        if title in ["研修会情報", "お知らせ", "イベント情報", "サイトマップ"]:
+            # 代替でページの他の大きな見出しを探す
+            other_h = main_content.find(['h1', 'h2', 'h3'])
+            if other_h:
+                title = other_h.get_text(strip=True)
 
-        # --- 日時・場所の抽出 ---
+        # --- 3. 本文テキストの取得 ---
+        text = main_content.get_text()
+
+        # --- 4. 日時・場所の抽出 ---
         date_match = re.search(r'(日時|開催日時|日 時)[:：\s]*([^\n]+)', text)
         place_match = re.search(r'(場所|開催場所|会場|場 所)[:：\s]*([^\n]+)', text)
 
         extracted_date = date_match.group(2).strip() if date_match else ""
         extracted_place = place_match.group(2).strip() if place_match else ""
-        
-        # --- 主催・担当・部署の抽出 ---
+
+        # --- 5. 主催・部署の抽出 ---
         extracted_org = ""
-        org_match = re.search(r'(主催|主催者|担当|問合せ先|問い合わせ)[:：\s]*([^\n]+)', text)
         
+        # 明示的な「主催：〇〇」「担当：〇〇」を優先検索
+        org_match = re.search(r'(主催|主催者|担当|問合せ先|問い合わせ)[:：\s]*([^\n]+)', text)
         if org_match:
             candidate = org_match.group(2).strip()
-            # 「サイトマップ」や「注意事項」などの誤判定を除外
-            if not re.search(r'サイトマップ|注意事項|免責事項', candidate) and len(candidate) <= 40:
+            if not re.search(r'サイトマップ|注意事項|免責事項|庶務部', candidate) and len(candidate) <= 40:
                 extracted_org = candidate
 
-        # 部署名・委員会名（〇〇部、〇〇委員会等）が本文中に含まれているか検索
-        dept_match = re.search(r'([^\s\n]+?(?:部|委員会|局))', text)
-        dept_name = ""
-        if dept_match:
-            possible_dept = dept_match.group(1).strip()
-            if any(k in possible_dept for k in ["学術", "研修", "広報", "財務", "総務", "福祉", "教育部", "委員会", "部"]):
-                if len(possible_dept) < 20 and not re.search(r'サイトマップ|注意事項', possible_dept):
-                    dept_name = possible_dept
-
-        # 主催表記の整列・クレンジング
+        # 部署名キーワード（学術、研修、広報など特定の部会に絞る）
         if not extracted_org:
-            if dept_name and "島根県作業療法士会" not in dept_name:
-                extracted_org = f"（一社）島根県作業療法士会 {dept_name}"
-            elif dept_name:
-                extracted_org = dept_name
-            else:
-                extracted_org = "（一社）島根県作業療法士会"
-        else:
-            if "作業療法士会" not in extracted_org and "島根" not in extracted_org:
-                extracted_org = f"（一社）島根県作業療法士会 {extracted_org}"
+            dept_match = re.search(r'([^\s\n]+?(?:学術|研修|広報|教育部|福祉|総務|地域|学術部|研修部|広報部)部?)', text)
+            if dept_match:
+                possible_dept = dept_match.group(1).strip()
+                if len(possible_dept) <= 15 and "庶務" not in possible_dept:
+                    if "部" not in possible_dept and "委員会" not in possible_dept:
+                        possible_dept += "部"
+                    extracted_org = f"（一社）島根県作業療法士会 {possible_dept}"
 
-        # 最終クレンジング（「サイトマップ」が残っていれば一括除去）
-        extracted_org = re.sub(r'サイトマップ|sitemap|Sitemap', '', extracted_org, flags=re.IGNORECASE).strip()
+        # それでも取れない場合のデフォルト
+        if not extracted_org:
+            extracted_org = "（一社）島根県作業療法士会"
+        elif "作業療法士会" not in extracted_org and "島根" not in extracted_org:
+            extracted_org = f"（一社）島根県作業療法士会 {extracted_org}"
 
         return {
             "title": title,

@@ -66,21 +66,21 @@ def fetch_page_info(url):
             if other_h:
                 raw_title = other_h.get_text(strip=True)
 
-        cleaned_title = raw_title.strip(" ［］[]「」『』\t\n")
+        cleaned_title = raw_title.strip(" ［］[]「」『』【】\t\n")
 
         title = cleaned_title
         extracted_subtitle = ""
 
-        # ★ サブタイトルの自動分離ロジック（修正：安全な正規表現に更新）
+        # サブタイトルの自動分離ロジック
         bracket_match = re.search(r'^(.*?)\s*[［\[（\(](.*?)[］\]）\)]$', cleaned_title)
         if bracket_match:
-            title = bracket_match.group(1).strip(" ［］[]「」『』")
-            extracted_subtitle = bracket_match.group(2).strip(" ［］[]「」『』")
+            title = bracket_match.group(1).strip(" ［］[]「」『』【】")
+            extracted_subtitle = bracket_match.group(2).strip(" ［］[]「」『』【】")
         elif any(sep in cleaned_title for sep in [':', '：', '-', '〜', '~', '─']):
             parts = re.split(r'[:：\-〜~─]|\s+-\s+', cleaned_title, maxsplit=1)
-            title = parts[0].strip(" ［］[]「」『』〜~")
+            title = parts[0].strip(" ［］[]「」『』【】〜~")
             if len(parts) > 1:
-                extracted_subtitle = parts[1].strip(" ［］[]「」『』〜~")
+                extracted_subtitle = parts[1].strip(" ［］[]「」『』【】〜~")
 
         # --- 3. 本文テキストの取得 ---
         text = main_content.get_text()
@@ -95,19 +95,22 @@ def fetch_page_info(url):
         # --- 5. 主催・グループ・部署の抽出 ---
         extracted_org = ""
 
-        # ★ グループ検索（修正：re.searchを使わず判定を記述）
-        group_match = re.search(r'([^\s\n【】「」]+?(?:グループ|チーム|部|委員会|局))', text)
+        group_match = re.search(r'([^\s\n]+?(?:グループ|チーム|部|委員会|局))', text)
         found_group = ""
         ignore_words = ["庶務", "サイトマップ", "注意事項", "免責事項", "参加", "研修会"]
         
         if group_match:
             candidate_group = group_match.group(1).strip()
+            # ★ グループ名から前後の括弧・記号を除去
+            candidate_group = candidate_group.strip(" ［］[]「」『』【】\t\n")
             if not any(word in candidate_group for word in ignore_words) and len(candidate_group) <= 20:
                 found_group = candidate_group
 
         org_match = re.search(r'(主催|主催者|担当|問合せ先|問い合わせ)[:：\s]*([^\n]+)', text)
         if org_match:
             candidate_org = org_match.group(2).strip()
+            # ★ 主催者名から前後の括弧・記号を除去
+            candidate_org = candidate_org.strip(" ［］[]「」『』【】\t\n")
             if not any(word in candidate_org for word in ignore_words) and len(candidate_org) <= 30:
                 if candidate_org != raw_title and candidate_org != "研修会情報":
                     extracted_org = candidate_org
@@ -121,6 +124,9 @@ def fetch_page_info(url):
             extracted_org = "（一社）島根県作業療法士会"
         elif "作業療法士会" not in extracted_org and "島根" not in extracted_org:
             extracted_org = f"（一社）島根県作業療法士会 {extracted_org}"
+
+        # ★ 最終出力の前にも再度括弧を除去
+        extracted_org = extracted_org.strip(" ［］[]「」『』【】")
 
         return {
             "title": title,

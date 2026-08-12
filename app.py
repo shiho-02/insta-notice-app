@@ -55,7 +55,11 @@ def fetch_page_info(url):
 
         extracted_date = date_match.group(2).strip() if date_match else ""
         extracted_place = place_match.group(2).strip() if place_match else ""
-        extracted_org = org_match.group(2).strip() if org_match else "（一社）島根県作業療法士会"
+        
+        extracted_org = org_match.group(2).strip() if org_match else ""
+        # 「注意事項」などの誤判定を防ぎ、不要な文字があればデフォルトに戻す
+        if not extracted_org or "注意事項" in extracted_org or len(extracted_org) > 30:
+            extracted_org = "（一社）島根県作業療法士会"
 
         return {
             "title": title,

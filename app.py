@@ -36,8 +36,15 @@ def get_font(size):
 def fetch_page_info(url):
     """記事本文からグループ・部会名を含めた詳細な主催情報を抽出し、タイトルとサブタイトルを自動分離する関数"""
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        res = requests.get(url, headers=headers, timeout=5)
+        # 一般的なブラウザに見せかけるヘッダー
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8'
+        }
+        # タイムアウトを10秒に延長し、検証エラーを回避するための設定を追加
+        res = requests.get(url, headers=headers, timeout=10, verify=False)
+        res.raise_for_status() # ステータスコードエラーのチェック
+        
         res.encoding = res.apparent_encoding
         soup = BeautifulSoup(res.text, 'html.parser')
 
@@ -55,27 +62,22 @@ def fetch_page_info(url):
         elif soup.title and soup.title.string:
             raw_title = soup.title.string.strip()
 
-        # サイト名などの末尾の記述をカット（例: "研修会名 | 島根県作業療法士会" -> "研修会名"）
         raw_title = re.sub(r'[\-|\||│].*$', '', raw_title).strip()
         if raw_title in ["研修会情報", "お知らせ", "イベント情報", "サイトマップ"]:
             other_h = main_content.find(['h1', 'h2', 'h3'])
             if other_h:
                 raw_title = other_h.get_text(strip=True)
 
-        # ★ 1. 余計な前後の括弧・記号を除去
         cleaned_title = raw_title.strip(" ［］[]「」『』\t\n")
 
         title = cleaned_title
         extracted_subtitle = ""
 
-        # ★ 2. サブタイトルの自動分離ロジック
-        # パターンA: 括弧でサブタイトルが含まれている場合（例: "メインタイトル［サブタイトル］"）
+        # サブタイトルの自動分離ロジック
         bracket_match = re.search(r'^(.*?)\s*[［\[（\(](.*?)[］\]）\)]$')
         if bracket_match:
             title = bracket_match.group(1).strip(" ［］[]「」『』")
             extracted_subtitle = bracket_match.group(2).strip(" ［］[]「」『』")
-        
-        # パターンB: 波線・コロン等で区切られている場合（例: "メインタイトル 〜サブタイトル〜"）
         elif re.search(r'[:：\-〜~─]| - ', cleaned_title):
             parts = re.split(r'[:：\-〜~─]|\s+-\s+', cleaned_title, maxsplit=1)
             title = parts[0].strip(" ［］[]「」『』〜~")
@@ -95,7 +97,6 @@ def fetch_page_info(url):
         # --- 5. 主催・グループ・部署の抽出 ---
         extracted_org = ""
 
-        # ① グループ/チーム/部会/委員会のパターン検索
         group_match = re.search(r'([^\s\n─-─【】「」]+?(?:グループ|チーム|部|委員会|局))', text)
         found_group = ""
         if group_match:
@@ -103,7 +104,6 @@ def fetch_page_info(url):
             if not re.search(r'庶務|サイトマップ|注意事項|免責事項|参加|研修会', candidate_group) and len(candidate_group) <= 20:
                 found_group = candidate_group
 
-        # ② 「主催：〇〇」「担当：〇〇」表記の検索
         org_match = re.search(r'(主催|主催者|担当|問合せ先|問い合わせ)[:：\s]*([^\n]+)', text)
         if org_match:
             candidate_org = org_match.group(2).strip()
@@ -111,7 +111,6 @@ def fetch_page_info(url):
                 if candidate_org != raw_title and candidate_org != "研修会情報":
                     extracted_org = candidate_org
 
-        # ③ 整形ロジック
         if found_group:
             if "作業療法士会" not in found_group and "島根" not in found_group:
                 extracted_org = f"（一社）島根県作業療法士会 {found_group}"
@@ -124,13 +123,17 @@ def fetch_page_info(url):
 
         return {
             "title": title,
-            "subtitle": extracted_subtitle,  # ★ 追加
+            "subtitle": extracted_subtitle,
             "date": extracted_date,
             "place": extracted_place,
             "org": extracted_org,
+            "error": None
         }
-    except Exception:
-        return None
+    except Exception as e:
+        # エラー発生時に詳細なエラー理由を返す
+        return {
+            "error": str(e)
+        }
 
 def wrap_and_get_font(text, max_width=900, initial_size=64, min_size=34):
     if not text:
@@ -302,12 +305,11 @@ st.divider()
 
 col1, col2 = st.columns([1, 1])
 
-# ★ session_stateの初期化（auto_subtitle を追加）
 if "auto_org" not in st.session_state:
     st.session_state["auto_org"] = "（一社）島根県作業療法士会"
 if "auto_title" not in st.session_state:
     st.session_state["auto_title"] = ""
-if "auto_subtitle" not in st.session_state:  # ★ 追加
+if "auto_subtitle" not in st.session_state:
     st.session_state["auto_subtitle"] = ""
 if "auto_date" not in st.session_state:
     st.session_state["auto_date"] = ""
@@ -321,16 +323,17 @@ with col1:
             if input_url:
                 with st.spinner("ページ情報を取得中..."):
                     info = fetch_page_info(input_url)
-                    if info:
+                    if info and not info.get("error"):
                         st.session_state["auto_title"] = info["title"]
-                        st.session_state["auto_subtitle"] = info["subtitle"]  # ★ 追加
+                        st.session_state["auto_subtitle"] = info["subtitle"]
                         st.session_state["auto_date"] = info["date"]
                         st.session_state["auto_place"] = info["place"]
                         st.session_state["auto_org"] = info["org"]
                         st.success("情報をフォームに反映しました！")
                         st.rerun()
                     else:
-                        st.error("ページの読み込みに失敗しました。URLをご確認ください。")
+                        error_msg = info.get("error") if info else "不明なエラー"
+                        st.error(f"ページの読み込みに失敗しました。\nエラー詳細: {error_msg}")
 
     st.subheader("📄 1. テキスト入力")
 
@@ -338,7 +341,6 @@ with col1:
         if mode == "研修会情報":
             主催 = st.text_input("主催者・団体名", value=st.session_state["auto_org"])
             タイトル = st.text_input("研修会名・イベントタイトル", value=st.session_state["auto_title"])
-            # ★ 自動取得したサブタイトルを反映
             サブタイトル = st.text_input("サブタイトル（不要な場合は空欄）", value=st.session_state["auto_subtitle"])
             項目1 = st.text_input("開催日時", value=st.session_state["auto_date"])
             項目2 = st.text_input("開催場所", value=st.session_state["auto_place"])
@@ -351,7 +353,6 @@ with col1:
         else:
             主催 = st.text_input("発信元・団体名", value=st.session_state["auto_org"])
             タイトル = st.text_input("お知らせタイトル", value=st.session_state["auto_title"])
-            # ★ 自動取得したサブタイトルを反映
             サブタイトル = st.text_input("サブタイトル（不要な場合は空欄）", value=st.session_state["auto_subtitle"])
             項目1, 項目2 = "", ""
 

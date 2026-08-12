@@ -9,28 +9,32 @@ from PIL import Image, ImageDraw, ImageFont
 
 st.set_page_config(page_title="インスタ投稿作成アプリ", layout="wide")
 
+# ファイルパスを絶対パスで安全に指定
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FONT_FILE_NAME = "BananaSlip-Bold.otf"
 BG_IMAGE_DEFAULT = "instagram.png"
 BG_IMAGE_NOTICE = "instagram_notice.png"
 
-font_path = os.path.join(".", FONT_FILE_NAME)
-
+font_path = os.path.join(BASE_DIR, FONT_FILE_NAME)
 DEFAULT_HASHTAGS = "#（一社）島根県作業療法士会 #島根OT #作業療法 #OT"
 
-@st.cache_resource
-def load_fonts():
-    if os.path.exists(font_path):
-        try:
-            f_org = ImageFont.truetype(font_path, 36)
-            f_sub = ImageFont.truetype(font_path, 36)
-            f_label = ImageFont.truetype(font_path, 30)
-            f_val = ImageFont.truetype(font_path, 40)
-            return f_org, f_sub, f_label, f_val
-        except Exception:
-            pass
-    
-    def_font = ImageFont.load_default()
-    return def_font, def_font, def_font, def_font
+# --- フォントの安全な読み込み（文字化け防止） ---
+def get_font(size):
+    """カスタムフォントを試し、失敗時は日本語システムフォントにフォールバック"""
+    candidates = [
+        font_path,
+        "C:\\Windows\\Fonts\\msgothic.ttc",  # Windows (MS ゴシック)
+        "C:\\Windows\\Fonts\\meiryo.ttc",    # Windows (メイリオ)
+        "/System/Library/Fonts/Hiragino Sans GB.ttc", # Mac
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", # Linux (日本語)
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                continue
+    return ImageFont.load_default()
 
 def fetch_page_info(url):
     """ウェブサイトからテキストを解析し、各項目を抽出する関数"""
@@ -40,15 +44,11 @@ def fetch_page_info(url):
         res.encoding = res.apparent_encoding
         soup = BeautifulSoup(res.text, 'html.parser')
 
-        # ページのテキスト全体を取得
         text = soup.get_text()
         
-        # タイトルの取得
         title = soup.title.string.strip() if soup.title and soup.title.string else ""
-        # サイト名などの不要な後続文字を除去
         title = re.sub(r'[\-|\||│].*$', '', title).strip()
 
-        # キーワード検索による抽出
         date_match = re.search(r'(日時|開催日時|日 時)[:：\s]*([^\n]+)', text)
         place_match = re.search(r'(場所|開催場所|会場|場 所)[:：\s]*([^\n]+)', text)
         org_match = re.search(r'(主催|主催者)[:：\s]*([^\n]+)', text)
@@ -57,7 +57,6 @@ def fetch_page_info(url):
         extracted_place = place_match.group(2).strip() if place_match else ""
         
         extracted_org = org_match.group(2).strip() if org_match else ""
-        # 「注意事項」などの誤判定を防ぎ、不要な文字があればデフォルトに戻す
         if not extracted_org or "注意事項" in extracted_org or len(extracted_org) > 30:
             extracted_org = "（一社）島根県作業療法士会"
 
@@ -66,27 +65,33 @@ def fetch_page_info(url):
             "date": extracted_date,
             "place": extracted_place,
             "org": extracted_org,
-            "raw_text": text[:200]
         }
-    except Exception as e:
+    except Exception:
         return None
 
 def wrap_and_get_font(text, max_width=900, initial_size=64, min_size=34):
-    if not text or not os.path.exists(font_path):
-        return [text or ""], ImageFont.load_default()
+    if not text:
+        return [""], get_font(min_size)
 
     size = initial_size
     while size >= min_size:
-        font = ImageFont.truetype(font_path, size)
-        sample_char_w = font.getbbox("あ")[2] - font.getbbox("あ")[0]
+        font = get_font(size)
+        try:
+            bbox = font.getbbox("あ")
+            sample_char_w = bbox[2] - bbox[0]
+        except AttributeError:
+            sample_char_w = size
+
         chars_per_line = max(1, int(max_width / sample_char_w))
-        
         lines = textwrap.wrap(text, width=chars_per_line)
         
         all_fit = True
         for line in lines:
-            bbox = font.getbbox(line)
-            w = bbox[2] - bbox[0]
+            try:
+                bbox = font.getbbox(line)
+                w = bbox[2] - bbox[0]
+            except AttributeError:
+                w = font.getsize(line)[0]
             if w > max_width:
                 all_fit = False
                 break
@@ -96,23 +101,28 @@ def wrap_and_get_font(text, max_width=900, initial_size=64, min_size=34):
             
         size -= 4
 
-    font = ImageFont.truetype(font_path, min_size)
+    font = get_font(min_size)
     lines = textwrap.wrap(text, width=16)
     return lines, font
 
 def get_bg(mode):
     target_bg = BG_IMAGE_NOTICE if mode == "お知らせ" else BG_IMAGE_DEFAULT
-    bg_p = os.path.join(".", target_bg)
+    bg_p = os.path.join(BASE_DIR, target_bg)
+    default_bg_p = os.path.join(BASE_DIR, BG_IMAGE_DEFAULT)
     
     if os.path.exists(bg_p):
         return Image.open(bg_p).convert('RGB').resize((1080, 1080))
-    elif os.path.exists(os.path.join(".", BG_IMAGE_DEFAULT)):
-        return Image.open(os.path.join(".", BG_IMAGE_DEFAULT)).convert('RGB').resize((1080, 1080))
+    elif os.path.exists(default_bg_p):
+        return Image.open(default_bg_p).convert('RGB').resize((1080, 1080))
     else:
+        # 背景画像が見つからない場合のフォールバック（白背景）
         return Image.new('RGB', (1080, 1080), color=(255, 255, 255))
 
 def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項目2, second_type, 挿入画像, 詳細テキスト, ハッシュタグ):
-    f_org, f_sub, f_label, f_val = load_fonts()
+    f_org = get_font(36)
+    f_sub = get_font(36)
+    f_label = get_font(30)
+    f_val = get_font(40)
 
     # --- 1枚目生成 ---
     img1 = get_bg(mode)
@@ -122,7 +132,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
     if mode == "研修会情報":
         title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=900, initial_size=64, min_size=34)
-        line_height = f_title.size * 1.25
+        line_height = getattr(f_title, 'size', 36) * 1.25
         total_height = line_height * len(title_lines)
         start_y = 430 - (total_height / 2) + (line_height / 2)
 
@@ -143,7 +153,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
     else:
         title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=880, initial_size=68, min_size=36)
-        line_height = f_title.size * 1.3
+        line_height = getattr(f_title, 'size', 36) * 1.3
         total_height = line_height * len(title_lines)
         start_y = 540 - (total_height / 2) + (line_height / 2)
 
@@ -169,12 +179,9 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
                         insert_img = insert_img.convert('RGBA')
 
                     max_w, max_h = 800, 800
-                    try:
-                        resample_filter = Image.Resampling.LANCZOS
-                    except AttributeError:
-                        resample_filter = Image.LANCZOS
-
+                    resample_filter = getattr(Image, 'Resampling', Image).LANCZOS
                     insert_img.thumbnail((max_w, max_h), resample_filter)
+
                     pos_x = (1080 - insert_img.width) // 2
                     pos_y = (1080 - insert_img.height) // 2
                     img2.paste(insert_img, (pos_x, pos_y), mask=insert_img)
@@ -183,7 +190,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
     else:
         if 詳細テキスト and 詳細テキスト.strip():
             detail_lines, f_detail = wrap_and_get_font(詳細テキスト, max_width=850, initial_size=48, min_size=28)
-            line_height = f_detail.size * 1.4
+            line_height = getattr(f_detail, 'size', 28) * 1.4
             total_height = line_height * len(detail_lines)
             start_y = 540 - (total_height / 2) + (line_height / 2)
 
@@ -233,6 +240,16 @@ st.divider()
 
 col1, col2 = st.columns([1, 1])
 
+# セッション状態の初期化
+if "auto_org" not in st.session_state:
+    st.session_state["auto_org"] = "（一社）島根県作業療法士会"
+if "auto_title" not in st.session_state:
+    st.session_state["auto_title"] = ""
+if "auto_date" not in st.session_state:
+    st.session_state["auto_date"] = ""
+if "auto_place" not in st.session_state:
+    st.session_state["auto_place"] = ""
+
 with col1:
     # 💡 URLからの自動入力エリア
     with st.expander("🔗 Webページ（URL）から情報を自動読み込み", expanded=False):
@@ -247,56 +264,46 @@ with col1:
                         st.session_state["auto_place"] = info["place"]
                         st.session_state["auto_org"] = info["org"]
                         st.success("情報をフォームに反映しました！")
+                        st.rerun()
                     else:
                         st.error("ページの読み込みに失敗しました。URLをご確認ください。")
 
     st.subheader("📄 1. テキスト入力")
-    
-    # セッション状態から取得値があるか判定
-    val_org = st.session_state.get("auto_org", "（一社）島根県作業療法士会")
-    val_title = st.session_state.get("auto_title", "")
-    val_date = st.session_state.get("auto_date", "")
-    val_place = st.session_state.get("auto_place", "")
 
-    if mode == "研修会情報":
-        主催 = st.text_input("主催者・団体名", value=val_org)
-        タイトル = st.text_input("研修会名・イベントタイトル", value=val_title)
-        サブタイトル = st.text_input("サブタイトル（不要な場合は空欄）")
-        項目1 = st.text_input("開催日時", value=val_date)
-        項目2 = st.text_input("開催場所", value=val_place)
-        second_type = "画像添付"
-        詳細テキスト = ""
-        
-        st.subheader("📷 2. 2枚目の画像設定")
-        挿入画像 = st.file_uploader("2枚目に挿入する画像（任意）", type=["png", "jpg", "jpeg"])
-
-    else:
-        主催 = st.text_input("発信元・団体名", value=val_org)
-        タイトル = st.text_input("お知らせタイトル", value=val_title)
-        サブタイトル = st.text_input("サブタイトル（不要な場合は空欄）")
-        項目1, 項目2 = "", ""
-
-        st.subheader("🖼️ 2. 2枚目のコンテンツ選択")
-        
-        type_options = ["📷 画像添付", "📝 詳細テキスト"]
-        selected_type = st.pills(
-            "2枚目の内容",
-            type_options,
-            default="📷 画像添付"
-        )
-        second_type = "画像添付" if "画像添付" in (selected_type or "") else "詳細テキスト"
-
-        if second_type == "画像添付":
-            挿入画像 = st.file_uploader("2枚目に挿入する画像", type=["png", "jpg", "jpeg"])
+    with st.form("input_form"):
+        if mode == "研修会情報":
+            主催 = st.text_input("主催者・団体名", value=st.session_state["auto_org"])
+            タイトル = st.text_input("研修会名・イベントタイトル", value=st.session_state["auto_title"])
+            サブタイトル = st.text_input("サブタイトル（不要な場合は空欄）")
+            項目1 = st.text_input("開催日時", value=st.session_state["auto_date"])
+            項目2 = st.text_input("開催場所", value=st.session_state["auto_place"])
+            second_type = "画像添付"
             詳細テキスト = ""
+            
+            st.subheader("📷 2. 2枚目の画像設定")
+            挿入画像 = st.file_uploader("2枚目に挿入する画像（任意）", type=["png", "jpg", "jpeg"])
+
         else:
-            挿入画像 = None
-            詳細テキスト = st.text_area("2枚目に表示する詳細テキスト", value=val_title or "", placeholder="例：定時社員総会を開催いたしました！\nご参加いただいた皆様、ありがとうございました。")
+            主催 = st.text_input("発信元・団体名", value=st.session_state["auto_org"])
+            タイトル = st.text_input("お知らせタイトル", value=st.session_state["auto_title"])
+            サブタイトル = st.text_input("サブタイトル（不要な場合は空欄）")
+            項目1, 項目2 = "", ""
 
-    st.subheader("🏷️ 3. ハッシュタグ設定")
-    ハッシュタグ = st.text_area("固定ハッシュタグ", value=DEFAULT_HASHTAGS, height=70)
+            st.subheader("🖼️ 2. 2枚目のコンテンツ選択")
+            selected_type = st.radio("2枚目の内容", ["📷 画像添付", "📝 詳細テキスト"], horizontal=True)
+            second_type = "画像添付" if "画像添付" in selected_type else "詳細テキスト"
 
-    submit = st.button("✨ 画像と文章を作成する", type="primary", use_container_width=True)
+            if second_type == "画像添付":
+                挿入画像 = st.file_uploader("2枚目に挿入する画像", type=["png", "jpg", "jpeg"])
+                詳細テキスト = ""
+            else:
+                挿入画像 = None
+                詳細テキスト = st.text_area("2枚目に表示する詳細テキスト", value=st.session_state["auto_title"], placeholder="例：定時社員総会を開催いたしました！\nご参加いただいた皆様、ありがとうございました。")
+
+        st.subheader("🏷️ 3. ハッシュタグ設定")
+        ハッシュタグ = st.text_area("固定ハッシュタグ", value=DEFAULT_HASHTAGS, height=70)
+
+        submit = st.form_submit_button("✨ 画像と文章を作成する", type="primary", use_container_width=True)
 
 with col2:
     if submit:

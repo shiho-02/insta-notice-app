@@ -34,7 +34,7 @@ def get_font(size):
     return ImageFont.load_default()
 
 def fetch_page_info(url):
-    """記事本文からグループ・部会名を含めた詳細な主催情報を抽出する関数"""
+    """記事本文からグループ・部会名を含めた詳細な主催情報を抽出し、タイトルとサブタイトルを自動分離する関数"""
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         res = requests.get(url, headers=headers, timeout=5)
@@ -46,20 +46,41 @@ def fetch_page_info(url):
         if not main_content:
             main_content = soup
 
-        # --- 2. タイトルの抽出 ---
-        title = ""
+        # --- 2. タイトルの抽出・サブタイトルの自動検出・括弧の除去 ---
+        raw_title = ""
         title_tag = soup.find(['h1', 'h2'], class_=re.compile(r'entry-title|post-title|title')) or main_content.find(['h1', 'h2'])
         
         if title_tag and title_tag.get_text(strip=True):
-            title = title_tag.get_text(strip=True)
+            raw_title = title_tag.get_text(strip=True)
         elif soup.title and soup.title.string:
-            title = soup.title.string.strip()
+            raw_title = soup.title.string.strip()
 
-        title = re.sub(r'[\-|\||│].*$', '', title).strip()
-        if title in ["研修会情報", "お知らせ", "イベント情報", "サイトマップ"]:
+        # サイト名などの末尾の記述をカット（例: "研修会名 | 島根県作業療法士会" -> "研修会名"）
+        raw_title = re.sub(r'[\-|\||│].*$', '', raw_title).strip()
+        if raw_title in ["研修会情報", "お知らせ", "イベント情報", "サイトマップ"]:
             other_h = main_content.find(['h1', 'h2', 'h3'])
             if other_h:
-                title = other_h.get_text(strip=True)
+                raw_title = other_h.get_text(strip=True)
+
+        # ★ 1. 余計な前後の括弧・記号を除去
+        cleaned_title = raw_title.strip(" ［］[]「」『』\t\n")
+
+        title = cleaned_title
+        extracted_subtitle = ""
+
+        # ★ 2. サブタイトルの自動分離ロジック
+        # パターンA: 括弧でサブタイトルが含まれている場合（例: "メインタイトル［サブタイトル］"）
+        bracket_match = re.search(r'^(.*?)\s*[［\[（\(](.*?)[］\]）\)]$')
+        if bracket_match:
+            title = bracket_match.group(1).strip(" ［］[]「」『』")
+            extracted_subtitle = bracket_match.group(2).strip(" ［］[]「」『』")
+        
+        # パターンB: 波線・コロン等で区切られている場合（例: "メインタイトル 〜サブタイトル〜"）
+        elif re.search(r'[:：\-〜~─]| - ', cleaned_title):
+            parts = re.split(r'[:：\-〜~─]|\s+-\s+', cleaned_title, maxsplit=1)
+            title = parts[0].strip(" ［］[]「」『』〜~")
+            if len(parts) > 1:
+                extracted_subtitle = parts[1].strip(" ［］[]「」『』〜~")
 
         # --- 3. 本文テキストの取得 ---
         text = main_content.get_text()
@@ -74,12 +95,11 @@ def fetch_page_info(url):
         # --- 5. 主催・グループ・部署の抽出 ---
         extracted_org = ""
 
-        # ① グループ/チーム/部会/委員会のパターン検索（例：福祉用具グループ、学術部など）
+        # ① グループ/チーム/部会/委員会のパターン検索
         group_match = re.search(r'([^\s\n─-─【】「」]+?(?:グループ|チーム|部|委員会|局))', text)
         found_group = ""
         if group_match:
             candidate_group = group_match.group(1).strip()
-            # 無関係なキーワードを除外
             if not re.search(r'庶務|サイトマップ|注意事項|免責事項|参加|研修会', candidate_group) and len(candidate_group) <= 20:
                 found_group = candidate_group
 
@@ -88,8 +108,7 @@ def fetch_page_info(url):
         if org_match:
             candidate_org = org_match.group(2).strip()
             if not re.search(r'サイトマップ|注意事項|免責事項|庶務部', candidate_org) and len(candidate_org) <= 30:
-                # タイトル自体が誤って取れている場合は除外
-                if candidate_org != title and candidate_org != "研修会情報":
+                if candidate_org != raw_title and candidate_org != "研修会情報":
                     extracted_org = candidate_org
 
         # ③ 整形ロジック
@@ -105,6 +124,7 @@ def fetch_page_info(url):
 
         return {
             "title": title,
+            "subtitle": extracted_subtitle,  # ★ 追加
             "date": extracted_date,
             "place": extracted_place,
             "org": extracted_org,
@@ -282,10 +302,13 @@ st.divider()
 
 col1, col2 = st.columns([1, 1])
 
+# ★ session_stateの初期化（auto_subtitle を追加）
 if "auto_org" not in st.session_state:
     st.session_state["auto_org"] = "（一社）島根県作業療法士会"
 if "auto_title" not in st.session_state:
     st.session_state["auto_title"] = ""
+if "auto_subtitle" not in st.session_state:  # ★ 追加
+    st.session_state["auto_subtitle"] = ""
 if "auto_date" not in st.session_state:
     st.session_state["auto_date"] = ""
 if "auto_place" not in st.session_state:
@@ -300,6 +323,7 @@ with col1:
                     info = fetch_page_info(input_url)
                     if info:
                         st.session_state["auto_title"] = info["title"]
+                        st.session_state["auto_subtitle"] = info["subtitle"]  # ★ 追加
                         st.session_state["auto_date"] = info["date"]
                         st.session_state["auto_place"] = info["place"]
                         st.session_state["auto_org"] = info["org"]
@@ -314,7 +338,8 @@ with col1:
         if mode == "研修会情報":
             主催 = st.text_input("主催者・団体名", value=st.session_state["auto_org"])
             タイトル = st.text_input("研修会名・イベントタイトル", value=st.session_state["auto_title"])
-            サブタイトル = st.text_input("サブタイトル（不要な場合は空欄）")
+            # ★ 自動取得したサブタイトルを反映
+            サブタイトル = st.text_input("サブタイトル（不要な場合は空欄）", value=st.session_state["auto_subtitle"])
             項目1 = st.text_input("開催日時", value=st.session_state["auto_date"])
             項目2 = st.text_input("開催場所", value=st.session_state["auto_place"])
             second_type = "画像添付"
@@ -326,7 +351,8 @@ with col1:
         else:
             主催 = st.text_input("発信元・団体名", value=st.session_state["auto_org"])
             タイトル = st.text_input("お知らせタイトル", value=st.session_state["auto_title"])
-            サブタイトル = st.text_input("サブタイトル（不要な場合は空欄）")
+            # ★ 自動取得したサブタイトルを反映
+            サブタイトル = st.text_input("サブタイトル（不要な場合は空欄）", value=st.session_state["auto_subtitle"])
             項目1, 項目2 = "", ""
 
             st.subheader("🖼️ 2. 2枚目のコンテンツ選択")

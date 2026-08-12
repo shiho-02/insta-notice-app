@@ -9,7 +9,6 @@ from PIL import Image, ImageDraw, ImageFont
 
 st.set_page_config(page_title="インスタ投稿作成アプリ", layout="wide")
 
-# ファイルパスを絶対パスで安全に指定
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FONT_FILE_NAME = "BananaSlip-Bold.otf"
 BG_IMAGE_DEFAULT = "instagram.png"
@@ -18,15 +17,13 @@ BG_IMAGE_NOTICE = "instagram_notice.png"
 font_path = os.path.join(BASE_DIR, FONT_FILE_NAME)
 DEFAULT_HASHTAGS = "#（一社）島根県作業療法士会 #島根OT #作業療法 #OT"
 
-# --- フォントの安全な読み込み（文字化け防止） ---
 def get_font(size):
-    """カスタムフォントを試し、失敗時は日本語システムフォントにフォールバック"""
     candidates = [
         font_path,
-        "C:\\Windows\\Fonts\\msgothic.ttc",  # Windows (MS ゴシック)
-        "C:\\Windows\\Fonts\\meiryo.ttc",    # Windows (メイリオ)
-        "/System/Library/Fonts/Hiragino Sans GB.ttc", # Mac
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", # Linux (日本語)
+        "C:\\Windows\\Fonts\\msgothic.ttc",
+        "C:\\Windows\\Fonts\\meiryo.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     ]
     for path in candidates:
         if os.path.exists(path):
@@ -37,7 +34,7 @@ def get_font(size):
     return ImageFont.load_default()
 
 def fetch_page_info(url):
-    """ウェブサイトからテキストを解析し、各項目を抽出する関数"""
+    """ウェブサイトからテキストを解析し、部署名含めて各項目を抽出する関数"""
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         res = requests.get(url, headers=headers, timeout=5)
@@ -46,19 +43,49 @@ def fetch_page_info(url):
 
         text = soup.get_text()
         
+        # タイトルの取得
         title = soup.title.string.strip() if soup.title and soup.title.string else ""
         title = re.sub(r'[\-|\||│].*$', '', title).strip()
 
+        # 日時・場所の抽出
         date_match = re.search(r'(日時|開催日時|日 時)[:：\s]*([^\n]+)', text)
         place_match = re.search(r'(場所|開催場所|会場|場 所)[:：\s]*([^\n]+)', text)
-        org_match = re.search(r'(主催|主催者)[:：\s]*([^\n]+)', text)
 
         extracted_date = date_match.group(2).strip() if date_match else ""
         extracted_place = place_match.group(2).strip() if place_match else ""
         
-        extracted_org = org_match.group(2).strip() if org_match else ""
-        if not extracted_org or "注意事項" in extracted_org or len(extracted_org) > 30:
-            extracted_org = "（一社）島根県作業療法士会"
+        # 主催・担当・部署の抽出パターン強化
+        extracted_org = ""
+        org_match = re.search(r'(主催|主催者|担当|問合せ先|問い合わせ)[:：\s]*([^\n]+)', text)
+        
+        if org_match:
+            candidate = org_match.group(2).strip()
+            # 注意事項などの誤判定を除外
+            if "注意事項" not in candidate and len(candidate) <= 40:
+                extracted_org = candidate
+
+        # 部署名・委員会名（〇〇部、〇〇委員会等）が本文中に含まれているか検索
+        dept_match = re.search(r'([^\s\n]+?(?:部|委員会|局))', text)
+        dept_name = ""
+        if dept_match:
+            possible_dept = dept_match.group(1).strip()
+            # 関係性の高い部会・委員会キーワードの絞り込み
+            if any(k in possible_dept for k in ["学術", "研修", "広報", "財務", "総務", "福祉", "教育部", "委員会", "部"]):
+                if len(possible_dept) < 20 and "注意事項" not in possible_dept:
+                    dept_name = possible_dept
+
+        # 主催表記の整列
+        if not extracted_org:
+            if dept_name and "島根県作業療法士会" not in dept_name:
+                extracted_org = f"（一社）島根県作業療法士会 {dept_name}"
+            elif dept_name:
+                extracted_org = dept_name
+            else:
+                extracted_org = "（一社）島根県作業療法士会"
+        else:
+            # 主催名に（一社）島根県作業療法士会が入っておらず、部会名だけが取れた場合の補完
+            if "作業療法士会" not in extracted_org and "島根" not in extracted_org:
+                extracted_org = f"（一社）島根県作業療法士会 {extracted_org}"
 
         return {
             "title": title,
@@ -115,7 +142,6 @@ def get_bg(mode):
     elif os.path.exists(default_bg_p):
         return Image.open(default_bg_p).convert('RGB').resize((1080, 1080))
     else:
-        # 背景画像が見つからない場合のフォールバック（白背景）
         return Image.new('RGB', (1080, 1080), color=(255, 255, 255))
 
 def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項目2, second_type, 挿入画像, 詳細テキスト, ハッシュタグ):
@@ -240,7 +266,6 @@ st.divider()
 
 col1, col2 = st.columns([1, 1])
 
-# セッション状態の初期化
 if "auto_org" not in st.session_state:
     st.session_state["auto_org"] = "（一社）島根県作業療法士会"
 if "auto_title" not in st.session_state:
@@ -251,7 +276,6 @@ if "auto_place" not in st.session_state:
     st.session_state["auto_place"] = ""
 
 with col1:
-    # 💡 URLからの自動入力エリア
     with st.expander("🔗 Webページ（URL）から情報を自動読み込み", expanded=False):
         input_url = st.text_input("研修会やお知らせページのURLを入力", placeholder="https://example.com/event/123")
         if st.button("🌐 情報を自動取得する", use_container_width=True):

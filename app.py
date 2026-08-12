@@ -95,7 +95,6 @@ def fetch_page_info(url):
         # --- 5. 主催・グループ・部署の抽出 ---
         extracted_org = ""
 
-        # ① グループ/チーム/部会/委員会のパターン検索（文字クラス内のハイフン表記を安全に修正）
         group_match = re.search(r'([^\s\n【】「」]+?(?:グループ|チーム|部|委員会|局))', text)
         found_group = ""
         if group_match:
@@ -130,6 +129,11 @@ def fetch_page_info(url):
         }
     except Exception as e:
         return {
+            "title": "",
+            "subtitle": "",
+            "date": "",
+            "place": "",
+            "org": "",
             "error": str(e)
         }
 
@@ -322,15 +326,15 @@ with col1:
                 with st.spinner("ページ情報を取得中..."):
                     info = fetch_page_info(input_url)
                     if info and not info.get("error"):
-                        st.session_state["auto_title"] = info["title"]
-                        st.session_state["auto_subtitle"] = info["subtitle"]
-                        st.session_state["auto_date"] = info["date"]
-                        st.session_state["auto_place"] = info["place"]
-                        st.session_state["auto_org"] = info["org"]
+                        st.session_state["auto_title"] = info.get("title", "")
+                        st.session_state["auto_subtitle"] = info.get("subtitle", "")
+                        st.session_state["auto_date"] = info.get("date", "")
+                        st.session_state["auto_place"] = info.get("place", "")
+                        st.session_state["auto_org"] = info.get("org", "（一社）島根県作業療法士会")
                         st.success("情報をフォームに反映しました！")
                         st.rerun()
                     else:
-                        error_msg = info.get("error") if info else "不明なエラー"
+                        error_msg = info.get("error") if info else "応答がありません"
                         st.error(f"ページの読み込みに失敗しました。\nエラー詳細: {error_msg}")
 
     st.subheader("📄 1. テキスト入力")

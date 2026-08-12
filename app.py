@@ -71,7 +71,7 @@ def fetch_page_info(url):
         title = cleaned_title
         extracted_subtitle = ""
 
-        # サブタイトルの自動分離ロジック
+        # サブタイトルの自動分離ロジック（修正：re.searchにcleaned_titleを確実に指定）
         bracket_match = re.search(r'^(.*?)\s*[［\[（\(](.*?)[］\]）\)]$')
         if bracket_match:
             title = bracket_match.group(1).strip(" ［］[]「」『』")
@@ -95,16 +95,19 @@ def fetch_page_info(url):
         # --- 5. 主催・グループ・部署の抽出 ---
         extracted_org = ""
 
+        # グループ検索（修正：引数を明確に指定）
         group_match = re.search(r'([^\s\n【】「」]+?(?:グループ|チーム|部|委員会|局))', text)
         found_group = ""
         if group_match:
             candidate_group = group_match.group(1).strip()
+            # 修正：re.search(パターン, 対象文字列) を徹底
             if not re.search(r'庶務|サイトマップ|注意事項|免責事項|参加|研修会', candidate_group) and len(candidate_group) <= 20:
                 found_group = candidate_group
 
         org_match = re.search(r'(主催|主催者|担当|問合せ先|問い合わせ)[:：\s]*([^\n]+)', text)
         if org_match:
             candidate_org = org_match.group(2).strip()
+            # 修正：re.search(パターン, 対象文字列) を徹底
             if not re.search(r'サイトマップ|注意事項|免責事項|庶務部', candidate_org) and len(candidate_org) <= 30:
                 if candidate_org != raw_title and candidate_org != "研修会情報":
                     extracted_org = candidate_org

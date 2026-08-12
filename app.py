@@ -36,14 +36,12 @@ def get_font(size):
 def fetch_page_info(url):
     """記事本文からグループ・部会名を含めた詳細な主催情報を抽出し、タイトルとサブタイトルを自動分離する関数"""
     try:
-        # 一般的なブラウザに見せかけるヘッダー
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8'
         }
-        # タイムアウトを10秒に延長し、検証エラーを回避するための設定を追加
         res = requests.get(url, headers=headers, timeout=10, verify=False)
-        res.raise_for_status() # ステータスコードエラーのチェック
+        res.raise_for_status()
         
         res.encoding = res.apparent_encoding
         soup = BeautifulSoup(res.text, 'html.parser')
@@ -97,16 +95,19 @@ def fetch_page_info(url):
         # --- 5. 主催・グループ・部署の抽出 ---
         extracted_org = ""
 
+        # ① グループ/チーム/部会/委員会のパターン検索（修正箇所：第2引数にtextを確実に指定）
         group_match = re.search(r'([^\s\n─-─【】「」]+?(?:グループ|チーム|部|委員会|局))', text)
         found_group = ""
         if group_match:
             candidate_group = group_match.group(1).strip()
+            # 修正箇所：re.search(パターン, 対象文字列) の引数順を修正
             if not re.search(r'庶務|サイトマップ|注意事項|免責事項|参加|研修会', candidate_group) and len(candidate_group) <= 20:
                 found_group = candidate_group
 
         org_match = re.search(r'(主催|主催者|担当|問合せ先|問い合わせ)[:：\s]*([^\n]+)', text)
         if org_match:
             candidate_org = org_match.group(2).strip()
+            # 修正箇所：re.search(パターン, 対象文字列) の引数順を修正
             if not re.search(r'サイトマップ|注意事項|免責事項|庶務部', candidate_org) and len(candidate_org) <= 30:
                 if candidate_org != raw_title and candidate_org != "研修会情報":
                     extracted_org = candidate_org
@@ -130,7 +131,6 @@ def fetch_page_info(url):
             "error": None
         }
     except Exception as e:
-        # エラー発生時に詳細なエラー理由を返す
         return {
             "error": str(e)
         }

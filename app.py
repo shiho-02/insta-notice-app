@@ -34,22 +34,20 @@ def get_font(size):
     return ImageFont.load_default()
 
 def fetch_page_info(url):
-    """記事本文エリアを特定して精度高くタイトル・主催・日時・場所を抽出する関数"""
+    """記事本文からグループ・部会名を含めた詳細な主催情報を抽出する関数"""
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         res = requests.get(url, headers=headers, timeout=5)
         res.encoding = res.apparent_encoding
         soup = BeautifulSoup(res.text, 'html.parser')
 
-        # --- 1. 記事メインエリアの特定 ---
-        # サイト共通のヘッダー・フッター・サイドバーを排除するため、メイン記事枠を探す
+        # --- 1. メイン記事領域の取得 ---
         main_content = soup.find('article') or soup.find(class_=re.compile(r'entry-content|post-content|main|content'))
         if not main_content:
             main_content = soup
 
         # --- 2. タイトルの抽出 ---
         title = ""
-        # 記事内のh1/h2タグ、または特定のタイトルクラスを探す
         title_tag = soup.find(['h1', 'h2'], class_=re.compile(r'entry-title|post-title|title')) or main_content.find(['h1', 'h2'])
         
         if title_tag and title_tag.get_text(strip=True):
@@ -57,10 +55,8 @@ def fetch_page_info(url):
         elif soup.title and soup.title.string:
             title = soup.title.string.strip()
 
-        # サイト名や「研修会情報」「お知らせ」などのカテゴリ汎用名の除外
         title = re.sub(r'[\-|\||│].*$', '', title).strip()
         if title in ["研修会情報", "お知らせ", "イベント情報", "サイトマップ"]:
-            # 代替でページの他の大きな見出しを探す
             other_h = main_content.find(['h1', 'h2', 'h3'])
             if other_h:
                 title = other_h.get_text(strip=True)
@@ -75,28 +71,34 @@ def fetch_page_info(url):
         extracted_date = date_match.group(2).strip() if date_match else ""
         extracted_place = place_match.group(2).strip() if place_match else ""
 
-        # --- 5. 主催・部署の抽出 ---
+        # --- 5. 主催・グループ・部署の抽出 ---
         extracted_org = ""
-        
-        # 明示的な「主催：〇〇」「担当：〇〇」を優先検索
+
+        # ① グループ/チーム/部会/委員会のパターン検索（例：福祉用具グループ、学術部など）
+        group_match = re.search(r'([^\s\n─-─【】「」]+?(?:グループ|チーム|部|委員会|局))', text)
+        found_group = ""
+        if group_match:
+            candidate_group = group_match.group(1).strip()
+            # 無関係なキーワードを除外
+            if not re.search(r'庶務|サイトマップ|注意事項|免責事項|参加|研修会', candidate_group) and len(candidate_group) <= 20:
+                found_group = candidate_group
+
+        # ② 「主催：〇〇」「担当：〇〇」表記の検索
         org_match = re.search(r'(主催|主催者|担当|問合せ先|問い合わせ)[:：\s]*([^\n]+)', text)
         if org_match:
-            candidate = org_match.group(2).strip()
-            if not re.search(r'サイトマップ|注意事項|免責事項|庶務部', candidate) and len(candidate) <= 40:
-                extracted_org = candidate
+            candidate_org = org_match.group(2).strip()
+            if not re.search(r'サイトマップ|注意事項|免責事項|庶務部', candidate_org) and len(candidate_org) <= 30:
+                # タイトル自体が誤って取れている場合は除外
+                if candidate_org != title and candidate_org != "研修会情報":
+                    extracted_org = candidate_org
 
-        # 部署名キーワード（学術、研修、広報など特定の部会に絞る）
-        if not extracted_org:
-            dept_match = re.search(r'([^\s\n]+?(?:学術|研修|広報|教育部|福祉|総務|地域|学術部|研修部|広報部)部?)', text)
-            if dept_match:
-                possible_dept = dept_match.group(1).strip()
-                if len(possible_dept) <= 15 and "庶務" not in possible_dept:
-                    if "部" not in possible_dept and "委員会" not in possible_dept:
-                        possible_dept += "部"
-                    extracted_org = f"（一社）島根県作業療法士会 {possible_dept}"
-
-        # それでも取れない場合のデフォルト
-        if not extracted_org:
+        # ③ 整形ロジック
+        if found_group:
+            if "作業療法士会" not in found_group and "島根" not in found_group:
+                extracted_org = f"（一社）島根県作業療法士会 {found_group}"
+            else:
+                extracted_org = found_group
+        elif not extracted_org:
             extracted_org = "（一社）島根県作業療法士会"
         elif "作業療法士会" not in extracted_org and "島根" not in extracted_org:
             extracted_org = f"（一社）島根県作業療法士会 {extracted_org}"

@@ -52,12 +52,10 @@ def fetch_page_info(url):
         res.encoding = res.apparent_encoding
         soup = BeautifulSoup(res.text, 'html.parser')
 
-        # --- 1. メイン記事領域の取得 ---
         main_content = soup.find('article') or soup.find(class_=re.compile(r'entry-content|post-content|main|content'))
         if not main_content:
             main_content = soup
 
-        # --- 2. タイトルの抽出・サブタイトルの自動分離 ---
         raw_title = ""
         title_tag = soup.find(['h1', 'h2'], class_=re.compile(r'entry-title|post-title|title')) or main_content.find(['h1', 'h2'])
         
@@ -82,17 +80,14 @@ def fetch_page_info(url):
             if len(parts) > 1:
                 extracted_subtitle = parts[1].strip(" ［］[]「」『』【】〜~")
 
-        # --- 3. 本文テキストの取得 ---
         text = main_content.get_text()
 
-        # --- 4. 日時・場所の抽出 ---
         date_match = re.search(r'(日時|開催日時|日 時)[:：\s]*([^\n]+)', text)
         place_match = re.search(r'(場所|開催場所|会場|場 所)[:：\s]*([^\n]+)', text)
 
         extracted_date = date_match.group(2).strip() if date_match else ""
         extracted_place = place_match.group(2).strip() if place_match else ""
 
-        # --- 5. 発信元（主催・担当部会等）の抽出整理 ---
         extracted_org = ""
         ignore_words = ["庶務", "サイトマップ", "注意事項", "免責事項", "参加", "研修会", "案内", "詳細"]
 
@@ -107,7 +102,6 @@ def fetch_page_info(url):
             group_match = re.search(r'([^\s\n]+?(?:グループ|チーム|部|委員会|局|事務局))', text)
             if group_match:
                 candidate_group = group_match.group(1).strip().strip(" ［］[]「」『』【】\t\n")
-                # タイトルそのものと被っている場合は除外
                 if candidate_group not in title and not any(word in candidate_group for word in ignore_words) and len(candidate_group) <= 20:
                     extracted_org = candidate_group
 
@@ -118,9 +112,8 @@ def fetch_page_info(url):
             if "作業療法士会" not in extracted_org and "島根" not in extracted_org:
                 extracted_org = f"（一社）島根県作業療法士会 {extracted_org}"
         else:
-            extracted_org = "（一社）島根県作業療法士会"
+            extracted_org = "（一社）島根県作業療法士会 事務局"
 
-        # --- 6. 概要（要約テキスト）の自動作成 ---
         paragraphs = [p.strip() for p in text.split('\n') if p.strip()]
         summary_lines = []
         char_count = 0
@@ -149,24 +142,18 @@ def fetch_page_info(url):
         }
     except Exception as e:
         return {
-            "title": "",
-            "subtitle": "",
-            "date": "",
-            "place": "",
-            "org": "",
-            "summary": "",
-            "error": str(e)
+            "title": "", "subtitle": "", "date": "", "place": "", "org": "", "summary": "", "error": str(e)
         }
 
-def draw_white_glow(img, bbox, mode="normal"):
+def draw_white_glow(img, bbox, mode="card"):
     x1, y1, x2, y2 = bbox
     mask = Image.new('L', (1080, 1080), 0)
     draw_mask = ImageDraw.Draw(mask)
     
     if mode == "card":
         rect_box = (x1, y1, x2, y2)
-        draw_mask.rounded_rectangle(rect_box, radius=20, fill=235)
-        blurred_mask = mask.filter(ImageFilter.GaussianBlur(15))
+        draw_mask.rounded_rectangle(rect_box, radius=25, fill=240)
+        blurred_mask = mask.filter(ImageFilter.GaussianBlur(12))
     else:
         padding = 70
         rect_box = (max(0, x1 - padding), max(0, y1 - padding), min(1080, x2 + padding), min(1080, y2 + padding))
@@ -177,69 +164,25 @@ def draw_white_glow(img, bbox, mode="normal"):
     img.paste(white_layer, (0, 0), blurred_mask)
 
 def smart_wrap(text, font, max_width):
-    """「を」「に」「で」などの助詞で改行しやすいようにテキストを分割・改行処理"""
     if not text:
         return []
 
-    # 「〜を」などの後ろで強制改行を試みる分割
-    if "を" in text and len(text) > 8:
-        parts = text.split("を", 1)
-        line1 = parts[0] + "を"
-        line2 = parts[1]
-        
-        # それぞれの行が入りきるかチェック
-        try:
-            w1 = font.getbbox(line1)[2] - font.getbbox(line1)[0]
-            w2 = font.getbbox(line2)[2] - font.getbbox(line2)[0]
-        except AttributeError:
-            w1 = font.getsize(line1)[0]
-            w2 = font.getsize(line2)[0]
-
-        if w1 <= max_width and w2 <= max_width:
-            return [line1, line2]
-
-    # 通常の分かち書き処理
-    if parser:
-        raw_chunks = parser.parse(text)
-    else:
-        raw_chunks = re.split(r'(?<=[、。・\s\─\〜~：:\-\_\/をにで])', text)
-
-    chunks = []
-    current_chunk = ""
-    for chunk in raw_chunks:
-        if re.match(r'^[\u4e00-\u9faf]+$', chunk) or re.match(r'^[a-zA-Z0-9\-\_\.]+$', chunk):
-            current_chunk += chunk
-        else:
-            if current_chunk:
-                chunks.append(current_chunk)
-                current_chunk = ""
-            chunks.append(chunk)
-    if current_chunk:
-        chunks.append(current_chunk)
-
     lines = []
     current_line = ""
-
-    for chunk in chunks:
-        if chunk.strip() == "" and chunk != " ": continue
-            
-        test_line = current_line + chunk
+    for char in text:
+        test_line = current_line + char
         try:
-            bbox = font.getbbox(test_line)
-            w = bbox[2] - bbox[0]
+            w = font.getbbox(test_line)[2] - font.getbbox(test_line)[0]
         except AttributeError:
             w = font.getsize(test_line)[0]
 
         if w <= max_width:
             current_line = test_line
         else:
-            if current_line:
-                lines.append(current_line)
-            current_line = chunk
-
+            lines.append(current_line)
+            current_line = char
     if current_line:
         lines.append(current_line)
-
     return lines
 
 def wrap_and_get_font(text, max_width=860, initial_size=60, min_size=20, max_lines=3):
@@ -249,39 +192,11 @@ def wrap_and_get_font(text, max_width=860, initial_size=60, min_size=20, max_lin
     size = initial_size
     font = get_font(size)
     lines = smart_wrap(text, font, max_width)
-    
-    all_fit = True
-    for line in lines:
-        try:
-            bbox = font.getbbox(line)
-            w = bbox[2] - bbox[0]
-        except AttributeError:
-            w = font.getsize(line)[0]
-        if w > max_width:
-            all_fit = False
-            break
 
-    if not all_fit or len(lines) > max_lines:
-        while size >= min_size:
-            size -= 2
-            font = get_font(size)
-            lines = smart_wrap(text, font, max_width)
-
-            all_fit_retry = True
-            for line in lines:
-                try:
-                    bbox = font.getbbox(line)
-                    w = bbox[2] - bbox[0]
-                except AttributeError:
-                    w = font.getsize(line)[0]
-                if w > max_width:
-                    all_fit_retry = False
-                    break
-            
-            if all_fit_retry and len(lines) <= max_lines:
-                return lines, font
-    else:
-        return lines, font
+    while size >= min_size and len(lines) > max_lines:
+        size -= 2
+        font = get_font(size)
+        lines = smart_wrap(text, font, max_width)
 
     return lines[:max_lines], font
 
@@ -297,8 +212,7 @@ def get_bg(mode):
     else:
         return Image.new('RGB', (1080, 1080), color=(255, 255, 255))
 
-def draw_pink_underline(img, center_x, y_bottom, text_width, height=12):
-    """タイトル文字の下にピンクのマーカー下線を描画する関数"""
+def draw_pink_underline(img, center_x, y_bottom, text_width, height=14):
     overlay = Image.new('RGBA', img.size, (255, 255, 255, 0))
     draw = ImageDraw.Draw(overlay)
     
@@ -307,9 +221,7 @@ def draw_pink_underline(img, center_x, y_bottom, text_width, height=12):
     y1 = y_bottom - (height / 2)
     y2 = y_bottom + (height / 2)
     
-    # やわらかく可愛いピンク（#FFB6C1 / RGBA: 255, 182, 193, 180）
     draw.rounded_rectangle([x1, y1, x2, y2], radius=height//2, fill=(255, 150, 180, 190))
-    
     img.paste(overlay, (0, 0), overlay)
 
 def draw_image_page(img, 挿入画像):
@@ -331,44 +243,138 @@ def draw_image_page(img, 挿入画像):
         except Exception:
             st.warning("画像の読み込みに失敗しました。")
 
-def draw_text_page(img, text):
-    if text and text.strip():
-        max_w = 900
-        init_s = 34
-        min_s = 20
-        max_l = 12
-        
-        detail_lines, f_detail = wrap_and_get_font(text, max_width=max_w, initial_size=init_s, min_size=min_s, max_lines=max_l)
-        
-        font_size = getattr(f_detail, 'size', 28)
-        line_height = font_size * 1.5
-        total_height = line_height * len(detail_lines)
-        
-        start_y = 540 - (total_height / 2)
+def draw_justified_text(draw, start_x, start_y, line, font, target_width, is_last_line=False):
+    """両端揃え（幅揃え）で1行分のテキストを描画する処理"""
+    if not line:
+        return
 
-        rect_margin = 40
-        bbox = (540 - (max_w // 2) - rect_margin, int(start_y - rect_margin), 540 + (max_w // 2) + rect_margin, int(start_y + total_height + rect_margin))
+    if is_last_line or len(line) <= 1:
+        # 段落の最後の行や1文字の行は通常の左揃え
+        draw.text((start_x, start_y), line, fill=(40, 40, 40), font=font)
+        return
+
+    try:
+        total_text_width = font.getbbox(line)[2] - font.getbbox(line)[0]
+    except AttributeError:
+        total_text_width = font.getsize(line)[0]
+
+    space_to_distribute = target_width - total_text_width
+    
+    # 隙間が広すぎる場合（短すぎる行）は幅調整をスキップ
+    if space_to_distribute < 0 or space_to_distribute > (target_width * 0.35):
+        draw.text((start_x, start_y), line, fill=(40, 40, 40), font=font)
+        return
+
+    gap_per_char = space_to_distribute / (len(line) - 1)
+    
+    curr_x = start_x
+    for i, char in enumerate(line):
+        draw.text((curr_x, start_y), char, fill=(40, 40, 40), font=font)
+        try:
+            char_w = font.getbbox(char)[2] - font.getbbox(char)[0]
+        except AttributeError:
+            char_w = font.getsize(char)[0]
+        curr_x += char_w + gap_per_char
+
+def draw_text_page(img, title, text):
+    """3枚目（詳細テキスト画面）のテキスト描画処理（幅揃え版）"""
+    max_w = 750  # 幅を固定してきれいに揃える
+    
+    # --- 1. タイトル描画（上部配置＋ピンク下線） ---
+    title_start_y = 250
+    if title and title.strip():
+        title_lines, f_title = wrap_and_get_font(title, max_width=800, initial_size=42, min_size=24, max_lines=2)
+        font_size = getattr(f_title, 'size', 32)
+        line_height = font_size * 1.35
+
+        curr_t_y = title_start_y
+        for line in title_lines:
+            try:
+                w = f_title.getbbox(line)[2] - f_title.getbbox(line)[0]
+            except AttributeError:
+                w = f_title.getsize(line)[0]
+            
+            draw_pink_underline(img, 540, curr_t_y + (font_size / 2) - 2, w, height=12)
+
+            d = ImageDraw.Draw(img)
+            d.text((540, curr_t_y), line, fill=(30, 30, 30), font=f_title, anchor="mm")
+            curr_t_y += line_height
+
+    # --- 2. 本文描画（幅揃え調整） ---
+    if text and text.strip():
+        raw_paragraphs = text.split('\n')
+        
+        font_size = 28
+        f_detail = get_font(font_size)
+
+        lines_struct = []
+        total_lines_count = 0
+
+        for p in raw_paragraphs:
+            if not p.strip():
+                lines_struct.append([])
+                continue
+            wrapped = smart_wrap(p, f_detail, max_w)
+            lines_struct.append(wrapped)
+            total_lines_count += len(wrapped)
+
+        if total_lines_count > 10:
+            font_size = 24
+            f_detail = get_font(font_size)
+            lines_struct = []
+            total_lines_count = 0
+            for p in raw_paragraphs:
+                if not p.strip():
+                    lines_struct.append([])
+                    continue
+                wrapped = smart_wrap(p, f_detail, max_w)
+                lines_struct.append(wrapped)
+                total_lines_count += len(wrapped)
+
+        line_height = font_size * 1.55
+        total_text_height = (line_height * max(1, total_lines_count)) + (len(raw_paragraphs) * 8)
+
+        start_y = 410
+        card_w = 840
+        start_x = 540 - (max_w / 2)
+
+        # 白カード描画
+        padding_y = 40
+        bbox = (
+            int(540 - (card_w // 2)), 
+            int(start_y), 
+            int(540 + (card_w // 2)), 
+            int(start_y + total_text_height + padding_y)
+        )
         draw_white_glow(img, bbox, mode="card")
 
         d = ImageDraw.Draw(img)
-        curr_y = start_y + (line_height / 2)
+        curr_y = start_y + padding_y
 
-        for line in detail_lines:
-            d.text((540, curr_y), line, fill=(30, 30, 30), font=f_detail, anchor="mm")
-            curr_y += line_height
+        for paragraph_lines in lines_struct:
+            if not paragraph_lines:
+                curr_y += line_height * 0.5
+                continue
 
-def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項目2, second_type, 挿入画像, 詳細テキスト, ハッシュタグ, use_underline=True):
+            for idx, line in enumerate(paragraph_lines):
+                is_last = (idx == len(paragraph_lines) - 1)
+                draw_justified_text(d, start_x, curr_y, line, f_detail, max_w, is_last_line=is_last)
+                curr_y += line_height
+            
+            curr_y += 8
+
+def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項目2, second_type, 挿入画像, 詳細テキスト, ハッシュタグ):
     f_org = get_font(36)
     f_sub = get_font(32)
     f_label = get_font(28)
     f_val = get_font(36)
 
-    clean_org = 主催 or ''
+    clean_org = 主催 or '（一社）島根県作業療法士会 事務局'
     display_subtitle = f"〜 {サブタイトル.strip(' 〜~')} 〜" if サブタイトル and サブタイトル.strip() else ""
 
     generated_images = []
 
-    # --- 1枚目生成 ---
+    # --- 1枚目生成（下線なし） ---
     img1 = get_bg(mode)
     d1 = ImageDraw.Draw(img1)
 
@@ -383,16 +389,6 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
         for i, line in enumerate(title_lines):
             y = title_start_y + (i * line_height)
-            
-            # ピンクのマーカー下線を描画
-            if use_underline:
-                try:
-                    w = f_title.getbbox(line)[2] - f_title.getbbox(line)[0]
-                except AttributeError:
-                    w = f_title.getsize(line)[0]
-                draw_pink_underline(img1, 540, y + (font_size / 2) - 4, w, height=14)
-
-            d1 = ImageDraw.Draw(img1)
             d1.text((540, y), line, fill=(20, 20, 20), font=f_title, anchor="mm")
 
         current_y = title_start_y + total_title_height + 15
@@ -420,13 +416,12 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
             
         generated_images.append(img1)
 
-        # 研修会の2枚目
         img2 = get_bg(mode)
         draw_image_page(img2, 挿入画像)
         generated_images.append(img2)
 
     else:
-        # お知らせ用1枚目
+        # お知らせ用 1枚目
         title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=820, initial_size=58, min_size=28, max_lines=4)
         font_size = getattr(f_title, 'size', 36)
         line_height = font_size * 1.45
@@ -447,15 +442,6 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
         curr_y = start_y + (line_height / 2)
         for line in title_lines:
-            # ピンクのマーカー下線を描画
-            if use_underline:
-                try:
-                    w = f_title.getbbox(line)[2] - f_title.getbbox(line)[0]
-                except AttributeError:
-                    w = f_title.getsize(line)[0]
-                draw_pink_underline(img1, 540, curr_y + (font_size / 2) - 4, w, height=14)
-
-            d1_glow = ImageDraw.Draw(img1)
             d1_glow.text((540, curr_y), line, fill=(20, 20, 20), font=f_title, anchor="mm")
             curr_y += line_height
 
@@ -468,7 +454,6 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
         
         generated_images.append(img1)
 
-        # --- お知らせの2枚目・3枚目 ---
         if second_type == "📷 画像のみ":
             img2 = get_bg(mode)
             draw_image_page(img2, 挿入画像)
@@ -476,7 +461,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
             
         elif second_type == "📝 テキストのみ":
             img2 = get_bg(mode)
-            draw_text_page(img2, 詳細テキスト)
+            draw_text_page(img2, タイトル, 詳細テキスト)
             generated_images.append(img2)
             
         elif second_type == "🖼️ 画像＋テキスト（3枚）":
@@ -485,10 +470,9 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
             generated_images.append(img2)
             
             img3 = get_bg(mode)
-            draw_text_page(img3, 詳細テキスト)
+            draw_text_page(img3, タイトル, 詳細テキスト)
             generated_images.append(img3)
 
-    # --- キャプション生成 ---
     sub_text = f"\n{サブタイトル}\n" if サブタイトル and サブタイトル.strip() else ""
     tags_text = f"\n\n{ハッシュタグ}" if ハッシュタグ and ハッシュタグ.strip() else ""
     
@@ -577,8 +561,6 @@ with col1:
             サブタイトル = st.text_input("サブタイトル（不要な場合は空欄）", value=st.session_state["auto_subtitle"])
             項目1 = st.text_input("開催日時", value=st.session_state["auto_date"])
             項目2 = st.text_input("開催場所", value=st.session_state["auto_place"])
-            
-            use_underline = st.checkbox("🎀 タイトルにピンクの下線を引く", value=True)
 
             st.subheader("📷 2. 2枚目の画像設定")
             挿入画像 = st.file_uploader("2枚目に挿入する画像（任意）", type=["png", "jpg", "jpeg"])
@@ -591,8 +573,6 @@ with col1:
             タイトル = st.text_input("お知らせタイトル", value=st.session_state["auto_title"])
             サブタイトル = st.text_input("サブタイトル（不要な場合は空欄）", value=st.session_state["auto_subtitle"])
             項目1, 項目2 = "", ""
-
-            use_underline = st.checkbox("🎀 タイトルにピンクの下線を引く", value=True)
 
             st.subheader("🖼️ 2. 2枚目以降のコンテンツ選択")
             selected_type = st.radio("構成パターン", ["📷 画像のみ", "📝 テキストのみ", "🖼️ 画像＋テキスト（3枚）"], horizontal=True)
@@ -620,7 +600,7 @@ with col2:
 
         images, caption = generate_posts(
             mode, clean_org, タイトル, サブタイトル, 項目1, 項目2, 
-            second_type, 挿入画像, 詳細テキスト, ハッシュタグ, use_underline=use_underline
+            second_type, 挿入画像, 詳細テキスト, ハッシュタグ
         )
 
         st.subheader("🖼️ 完成画像")
@@ -632,24 +612,3 @@ with col2:
 
         st.subheader("📝 インスタ用キャプション（コピー用）")
         st.code(caption, language=None)
-        
-        st.markdown(
-            """
-            <a href="https://www.instagram.com/" target="_blank" style="text-decoration: none;">
-                <div style="
-                    background: linear-gradient(45deg, #f09433 0%, #e6683c 25%, #dc2743 50%, #cc2366 75%, #bc1888 100%);
-                    color: white;
-                    padding: 12px 20px;
-                    text-align: center;
-                    border-radius: 8px;
-                    font-weight: bold;
-                    font-size: 16px;
-                    margin-top: 15px;
-                    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-                ">
-                    📸 Instagram を開いて投稿する
-                </div>
-            </a>
-            """,
-            unsafe_allow_html=True
-        )

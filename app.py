@@ -39,7 +39,7 @@ def get_font(size):
     return ImageFont.load_default()
 
 def clean_scraped_text(text):
-    """不要なメタデータ・ノイズ文字列を完全除外"""
+    """不要なメタデータ・ノイズ文字列（会員の方へ、会員動向、Tweet等）を完全除去"""
     if not text:
         return ""
     text = re.sub(r'https?://[^\s\u3000]+', '', text)
@@ -64,7 +64,7 @@ def clean_scraped_text(text):
     return " ".join(cleaned_lines)
 
 def summarize_text_jp(text, max_chars=160):
-    """十分なテキスト量（150文字程度）を抽出"""
+    """円の中に綺麗に収まるテキスト量（150文字前後）を抽出"""
     clean_text = clean_scraped_text(text)
     if not clean_text:
         return ""
@@ -140,8 +140,8 @@ def smart_wrap(text, font, max_width):
 
     return lines
 
-def wrap_and_get_font(text, max_width=460, initial_size=32, min_size=16, max_lines=7):
-    """指定幅・行数に収まるよう自動でフォントサイズを調整"""
+def wrap_and_get_font(text, max_width=480, initial_size=32, min_size=16, max_lines=7):
+    """白い円枠（幅480px程度）に納まるようフォントサイズを自動調整"""
     if not text:
         return [""], get_font(min_size)
 
@@ -245,31 +245,12 @@ def get_bg(mode):
     else:
         return Image.new('RGBA', (1080, 1080), color=(255, 255, 255, 255))
 
-def draw_text_box_blur(img, bbox, padding=(30, 20), blur_radius=15, opacity=230):
-    """文字のあるエリア（bbox）の周囲に白ぼかし背景を描画"""
+def draw_pink_underline(img, center_x, y_bottom, text_width, height=12):
+    """タイトル用のピンクのマーカー線"""
     overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-    
-    x1 = bbox[0] - padding[0]
-    y1 = bbox[1] - padding[1]
-    x2 = bbox[2] + padding[0]
-    y2 = bbox[3] + padding[1]
-    
-    # 白い角丸長方形
-    draw.rounded_rectangle([x1, y1, x2, y2], radius=25, fill=(255, 255, 255, opacity))
-    
-    # ぼかし効果の適用
-    blurred_overlay = overlay.filter(ImageFilter.GaussianBlur(radius=blur_radius))
-    
-    # 背景に重ね合わせ
-    img.alpha_composite(blurred_overlay)
-
-def draw_pink_underline(img, center_x, y_bottom, text_width, height=10):
-    """ピンクのマーカー"""
-    overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-    x1 = center_x - (text_width / 2) - 8
-    x2 = center_x + (text_width / 2) + 8
+    x1 = center_x - (text_width / 2) - 10
+    x2 = center_x + (text_width / 2) + 10
     y1 = y_bottom - (height / 2)
     y2 = y_bottom + (height / 2)
     
@@ -278,6 +259,7 @@ def draw_pink_underline(img, center_x, y_bottom, text_width, height=10):
     img.alpha_composite(blurred_overlay)
 
 def draw_image_page(img, 挿入画像):
+    """画像ページ（白丸の中に綺麗に写真を収める）"""
     if 挿入画像 is not None:
         try:
             image_bytes = 挿入画像.getvalue()
@@ -286,7 +268,7 @@ def draw_image_page(img, 挿入画像):
                 if insert_img.mode != 'RGBA':
                     insert_img = insert_img.convert('RGBA')
 
-                max_w, max_h = 750, 750
+                max_w, max_h = 560, 560
                 resample_filter = getattr(Image, 'Resampling', Image).LANCZOS
                 insert_img.thumbnail((max_w, max_h), resample_filter)
 
@@ -297,42 +279,37 @@ def draw_image_page(img, 挿入画像):
             st.warning("画像の読み込みに失敗しました。")
 
 def draw_text_page(img, title, text):
-    """テキスト詳細ページ：文字がある部分だけに背景白ぼかしを配置"""
-    max_w = 680
+    """テキスト詳細ページ：画像中央の白丸枠の中に文字を完璧に納める"""
+    max_circle_w = 480  # 白丸の内径に合わせた横幅
 
+    # タイトル
     title_lines, f_title = ([], get_font(28))
     if title and title.strip():
         clean_t = clean_scraped_text(title)
-        title_lines, f_title = wrap_and_get_font(clean_t, max_width=max_w, initial_size=28, min_size=20, max_lines=2)
+        title_lines, f_title = wrap_and_get_font(clean_t, max_width=max_circle_w, initial_size=28, min_size=20, max_lines=2)
 
+    # 要約テキスト
     display_text = text if len(text) <= 160 else summarize_text_jp(text, max_chars=160)
-    body_lines, f_body = wrap_and_get_font(display_text, max_width=max_w, initial_size=24, min_size=16, max_lines=7)
+    body_lines, f_body = wrap_and_get_font(display_text, max_width=max_circle_w, initial_size=24, min_size=16, max_lines=7)
 
     title_size = getattr(f_title, 'size', 28)
     body_size = getattr(f_body, 'size', 22)
 
-    title_lh = title_size * 1.45
-    body_lh = body_size * 1.5
+    title_lh = title_size * 1.4
+    body_lh = body_size * 1.45
 
     total_title_h = len(title_lines) * title_lh
     total_body_h = len(body_lines) * body_lh
-    gap = 30 if total_title_h > 0 and total_body_h > 0 else 0
+    gap = 25 if total_title_h > 0 and total_body_h > 0 else 0
 
     total_content_h = total_title_h + gap + total_body_h
 
     start_y = 540 - (total_content_h / 2)
 
-    # 文字列全体の領域（bbox）を計算して背景白ぼかしを描画
-    box_x1 = 540 - (max_w / 2)
-    box_y1 = start_y
-    box_x2 = 540 + (max_w / 2)
-    box_y2 = start_y + total_content_h
-
-    draw_text_box_blur(img, [box_x1, box_y1, box_x2, box_y2], padding=(40, 30), blur_radius=15)
-
     d = ImageDraw.Draw(img)
     curr_y = start_y + (title_lh / 2)
 
+    # タイトル描画
     if title_lines:
         for line in title_lines:
             try:
@@ -348,6 +325,7 @@ def draw_text_page(img, title, text):
     else:
         curr_y = start_y + (body_lh / 2)
 
+    # 本文描画
     for line in body_lines:
         d.text((540, curr_y), line, fill=(40, 40, 40), font=f_body, anchor="mm")
         curr_y += body_lh
@@ -366,18 +344,14 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
     img1 = get_bg(mode)
 
     if mode == "研修会情報":
-        # 研修会情報 1枚目の文字エリア計算と白ぼかし
-        box_x1, box_y1, box_x2, box_y2 = 180, 280, 900, 780
-        draw_text_box_blur(img1, [box_x1, box_y1, box_x2, box_y2], padding=(30, 20), blur_radius=15)
-
         d1 = ImageDraw.Draw(img1)
-        d1.text((540, 320), clean_org, fill=(40, 40, 40), font=f_org, anchor="mm")
+        d1.text((540, 310), clean_org, fill=(40, 40, 40), font=f_org, anchor="mm")
 
-        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=640, initial_size=36, min_size=22, max_lines=3)
+        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=480, initial_size=36, min_size=22, max_lines=3)
         font_size = getattr(f_title, 'size', 30)
         line_height = font_size * 1.4
         total_title_height = line_height * len(title_lines)
-        title_start_y = 390 + (line_height / 2)
+        title_start_y = 380 + (line_height / 2)
 
         for i, line in enumerate(title_lines):
             y = title_start_y + (i * line_height)
@@ -386,7 +360,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
         current_y = title_start_y + total_title_height + 15
 
         if display_subtitle:
-            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=620, initial_size=24, min_size=18, max_lines=2)
+            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=460, initial_size=24, min_size=18, max_lines=2)
             sub_line_height = getattr(f_sub_dynamic, 'size', 22) * 1.25
             for line in sub_lines:
                 d1.text((540, current_y), line, fill=(60, 60, 60), font=f_sub_dynamic, anchor="mm")
@@ -414,20 +388,17 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
     else:
         # お知らせ 1枚目
-        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=640, initial_size=36, min_size=22, max_lines=3)
+        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=480, initial_size=36, min_size=22, max_lines=3)
         font_size = getattr(f_title, 'size', 30)
         line_height = font_size * 1.45
         total_height = line_height * len(title_lines) + 50
 
         sub_lines, f_sub_dynamic = ([], get_font(24))
         if display_subtitle:
-            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=620, initial_size=24, min_size=18, max_lines=2)
+            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=460, initial_size=24, min_size=18, max_lines=2)
             total_height += (getattr(f_sub_dynamic, 'size', 22) * 1.3 * len(sub_lines)) + 15
 
         start_y = 540 - (total_height / 2)
-
-        # 文字列のある範囲に白ぼかし
-        draw_text_box_blur(img1, [200, start_y, 880, start_y + total_height], padding=(35, 25), blur_radius=15)
 
         d1 = ImageDraw.Draw(img1)
         d1.text((540, start_y), clean_org, fill=(50, 50, 50), font=f_org, anchor="mm")

@@ -219,8 +219,8 @@ def fetch_page_info(url):
             "title": "", "subtitle": "", "date": "", "place": "", "org": "", "summary": "", "error": str(e)
         }
 
-def draw_soft_rounded_text_base(img, center_y, lines_count, line_height, max_width=440, alpha=210, blur_radius=25, padding=(30, 20)):
-    """【意図通りに修正】花の背景と文字の間に、角丸でふんわりとした半透明の白いモヤ（座布団）を敷く。文字幅に合わせて。"""
+def draw_soft_rounded_text_base(img, center_y, lines_count, line_height, max_width=440, alpha=220, blur_radius=30, padding=(30, 30)):
+    """【意図通りに修正】花の背景と文字の間に、角丸でふんわりとした半透明の白いモヤ（座布団）を敷く。"""
     overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     
@@ -295,10 +295,10 @@ def draw_text_page(img, title, text):
     title_lines, f_title = ([], get_font(26))
     if title and title.strip():
         clean_t = clean_scraped_text(title)
-        title_lines, f_title = wrap_and_get_font(clean_t, max_width=MAX_TEXT_WIDTH, initial_size= initial_size=28, min_size=20, max_lines=2)
+        title_lines, f_title = wrap_and_get_font(clean_t, max_width=MAX_TEXT_WIDTH, initial_size=28, min_size=20, max_lines=2)
 
     display_text = text if len(text) <= 150 else summarize_text_jp(text, target_chars=150)
-    body_lines, f_body = wrap_and_get_font(display_text, max_width=MAX_TEXT_WIDTH, initial_size= initial_size=22, min_size=16, max_lines=8)
+    body_lines, f_body = wrap_and_get_font(display_text, max_width=MAX_TEXT_WIDTH, initial_size=22, min_size=16, max_lines=8)
 
     title_size = getattr(f_title, 'size', 26)
     body_size = getattr(f_body, 'size', 20)
@@ -316,7 +316,6 @@ def draw_text_page(img, title, text):
 
     # 文字がある位置に合わせて背景に「ふんわりした白いモヤ」を描画
     center_y = start_y + (total_content_h / 2)
-    # 文字幅380pxに少し余白を持たせた座布団を敷く
     draw_soft_rounded_text_base(img, center_y, 1, total_content_h, max_width=420, alpha=220, blur_radius=30, padding=(30, 30))
 
     d = ImageDraw.Draw(img)
@@ -330,7 +329,6 @@ def draw_text_page(img, title, text):
             except AttributeError:
                 w = f_title.getsize(line)[0]
 
-            # マーカー線を文字の下に
             draw_pink_underline(img, 540, curr_y + (title_size / 2) - 3, w, height=8)
             d.text((540, curr_y), line, fill=(30, 30, 30), font=f_title, anchor="mm")
             curr_y += title_lh
@@ -358,14 +356,12 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
     img1 = get_bg(mode)
 
     if mode == "研修会情報":
-        # 文字がある場所に白いモヤを敷く（主催＋タイトル＋日時＋場所）
         total_content_h = 550
         draw_soft_rounded_text_base(img1, 540, 1, total_content_h, max_width=440, alpha=220, blur_radius=30, padding=(30, 30))
 
         d1 = ImageDraw.Draw(img1)
         d1.text((540, 320), clean_org, fill=(50, 50, 50), font=f_org, anchor="mm")
 
-        # タイトルも大きく、幅も広げた
         title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=380, initial_size=32, min_size=20, max_lines=3)
         font_size = getattr(f_title, 'size', 28)
         line_height = font_size * 1.4
@@ -379,7 +375,6 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
         current_y = title_start_y + total_title_height + 15
 
         if display_subtitle:
-            # サブタイトルも大きく
             sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=360, initial_size=22, min_size=16, max_lines=2)
             sub_line_height = getattr(f_sub_dynamic, 'size', 20) * 1.3
             for line in sub_lines:
@@ -420,7 +415,6 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
         start_y = 540 - (total_height / 2)
 
-        # お知らせの文字に合わせて白いモヤを敷く
         draw_soft_rounded_text_base(img1, 540, 1, total_height, max_width=440, alpha=220, blur_radius=30, padding=(30, 30))
 
         d1 = ImageDraw.Draw(img1)
@@ -522,7 +516,6 @@ with col1:
                 with st.spinner("ページ情報を取得中..."):
                     info = fetch_page_info(input_url)
                     if info and not info.get("error"):
-                        # Session Stateに取得した情報を保存
                         st.session_state["auto_title"] = info.get("title", "")
                         st.session_state["auto_subtitle"] = info.get("subtitle", "")
                         st.session_state["auto_date"] = info.get("date", "")
@@ -530,14 +523,13 @@ with col1:
                         st.session_state["auto_org"] = info.get("org", "（一社）島根県作業療法士会 事務局")
                         st.session_state["auto_summary"] = info.get("summary", "")
                         st.success("情報をフォームに反映しました！")
-                        st.rerun()  # フォームの値を更新するために再レンダリング
+                        st.rerun()
                     else:
                         st.error("ページの読み込みに失敗しました。")
 
     st.subheader("📄 1. テキスト入力")
 
     with st.form("input_form"):
-        # フォームの初期値にSession Stateを使用
         if mode == "研修会情報":
             主催 = st.text_input("主催・発信元", value=st.session_state["auto_org"])
             タイトル = st.text_input("研修会名・イベントタイトル", value=st.session_state["auto_title"])
@@ -578,7 +570,6 @@ with col1:
 with col2:
     if submit:
         clean_org = 主催 or ''
-        # 主主催が事務局以外の場合（認知症の作業療法委員会等）、デフォルト主催を上書きする
         images, caption = generate_posts(
             mode, clean_org, タイトル, サブタイトル, 項目1, 項目2, 
             second_type, 挿入画像, 詳細テキスト, ハッシュタグ

@@ -73,17 +73,14 @@ def summarize_text_jp(text, target_chars=160):
     if len(clean_text) <= target_chars:
         return clean_text
 
-    # 文の区切りを探す
     cutoff = clean_text[:target_chars + 30]
     punct_pos = [m.start() for m in re.finditer(r'[。！？]', cutoff)]
     
-    # target_charsに近い句点があればそこで切る
     valid_puncts = [p for p in punct_pos if p >= 100]
     if valid_puncts:
         best_p = valid_puncts[-1]
         return clean_text[:best_p + 1]
 
-    # 句点がなければ読点で綺麗に切る
     comma_pos = [m.start() for m in re.finditer(r'[、,]', clean_text[:target_chars])]
     if comma_pos:
         return clean_text[:comma_pos[-1]] + "など。"
@@ -151,7 +148,6 @@ def fetch_page_info(url):
 
         raw_full_text = soup.get_text()
 
-        # 発信元の検出（日付横の [ ] や ［ ］ を最優先）
         extracted_org = ""
         date_bracket_match = re.search(r'\d{4}年\d{1,2}月\d{1,2}日\s*[\[［](.*?)[\]］]', raw_full_text)
         if not date_bracket_match:
@@ -230,8 +226,8 @@ def fetch_page_info(url):
             "title": "", "subtitle": "", "date": "", "place": "", "org": "", "summary": "", "error": str(e)
         }
 
-def draw_clean_white_blur_base(img, center_y, total_height, box_width=850, max_alpha=230, blur_radius=35, padding_y=50):
-    """文字を美しく際立たせる大きな純白ぼかしフィルター」"""
+def draw_clean_white_blur_base(img, center_y, total_height, box_width=860, max_alpha=235, blur_radius=35, padding_y=50):
+    """文字を美しく際立たせる大きな純白ぼかしフィルター"""
     width, height = img.size
     
     mask = Image.new('L', (width, height), 0)
@@ -265,11 +261,11 @@ def get_bg(mode):
     bg_img = bg_img.convert('RGBA').resize((1080, 1080))
     return bg_img
 
-def draw_pink_underline(img, center_x, y_bottom, text_width, height=14):
+def draw_pink_underline(img, center_x, y_bottom, text_width, height=12):
     overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-    x1 = center_x - (text_width / 2) - 12
-    x2 = center_x + (text_width / 2) + 12
+    x1 = center_x - (text_width / 2) - 10
+    x2 = center_x + (text_width / 2) + 10
     y1 = y_bottom - (height / 2)
     y2 = y_bottom + (height / 2)
     
@@ -286,7 +282,7 @@ def draw_image_page(img, 挿入画像):
                 if insert_img.mode != 'RGBA':
                     insert_img = insert_img.convert('RGBA')
 
-                max_w, max_h = 700, 700
+                max_w, max_h = 750, 750
                 resample_filter = getattr(Image, 'Resampling', Image).LANCZOS
                 insert_img.thumbnail((max_w, max_h), resample_filter)
 
@@ -297,28 +293,38 @@ def draw_image_page(img, 挿入画像):
             st.warning("画像の読み込みに失敗しました。")
 
 def draw_text_page(img, title, text):
+    """文章の長さに応じて自動的に最適サイズに縮小し、入りきらない問題を完全解決"""
     MAX_TEXT_WIDTH = 760
+    MAX_BOX_HEIGHT = 680  # 画面に収まる最大高さ制限
 
-    title_lines, f_title = ([], get_font(42))
-    if title and title.strip():
-        clean_t = clean_scraped_text(title)
-        title_lines, f_title = wrap_and_get_font(clean_t, max_width=MAX_TEXT_WIDTH, font_size=42)
+    clean_t = clean_scraped_text(title) if title else ""
+    title_lines, f_title = wrap_and_get_font(clean_t, max_width=MAX_TEXT_WIDTH, font_size=40)
 
     display_text = text if len(text) <= 180 else summarize_text_jp(text, target_chars=180)
-    body_lines, f_body = wrap_and_get_font(display_text, max_width=MAX_TEXT_WIDTH, font_size=34)
 
-    title_lh = 42 * 1.5
-    body_lh = 34 * 1.55
+    # 動的なフォントサイズ調整（文字が絶対にはみ出さないよう調整）
+    current_body_size = 32
+    body_lines = []
+    f_body = None
 
-    total_title_h = len(title_lines) * title_lh
-    total_body_h = len(body_lines) * body_lh
-    gap = 40 if total_title_h > 0 and total_body_h > 0 else 0
+    while current_body_size >= 24:
+        body_lines, f_body = wrap_and_get_font(display_text, max_width=MAX_TEXT_WIDTH, font_size=current_body_size)
+        title_lh = 40 * 1.45
+        body_lh = current_body_size * 1.5
+        total_title_h = len(title_lines) * title_lh
+        total_body_h = len(body_lines) * body_lh
+        gap = 35 if total_title_h > 0 and total_body_h > 0 else 0
+        
+        total_content_h = total_title_h + gap + total_body_h
 
-    total_content_h = total_title_h + gap + total_body_h
+        if total_content_h <= MAX_BOX_HEIGHT:
+            break
+        current_body_size -= 2  # 入りきらない場合はフォントサイズを小さく調整
+
     center_y = 540
 
     # 白いぼかしシートを描画
-    draw_clean_white_blur_base(img, center_y, total_content_h, box_width=860, max_alpha=235, blur_radius=35, padding_y=55)
+    draw_clean_white_blur_base(img, center_y, total_content_h, box_width=860, max_alpha=235, blur_radius=35, padding_y=50)
 
     d = ImageDraw.Draw(img)
     start_y = center_y - (total_content_h / 2)
@@ -331,7 +337,7 @@ def draw_text_page(img, title, text):
             except AttributeError:
                 w = f_title.getsize(line)[0]
 
-            draw_pink_underline(img, 540, curr_y + 18, w, height=12)
+            draw_pink_underline(img, 540, curr_y + 16, w, height=10)
             d.text((540, curr_y), line, fill=(20, 20, 20), font=f_title, anchor="mm")
             curr_y += title_lh
 
@@ -369,7 +375,6 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
         total_content_h = 70 + total_title_h + (25 if display_subtitle else 0) + total_sub_h + 220
         center_y = 540
 
-        # 白いぼかしシートを描画（しっかり見える大きさ）
         draw_clean_white_blur_base(img1, center_y, total_content_h, box_width=860, max_alpha=235, blur_radius=35, padding_y=50)
 
         d1 = ImageDraw.Draw(img1)
@@ -409,8 +414,8 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
     else:
         # お知らせ 1枚目
-        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=750, font_size=48)
-        line_height = 48 * 1.45
+        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=750, font_size=46)
+        line_height = 46 * 1.45
         total_title_h = line_height * len(title_lines)
 
         sub_lines, f_sub = ([], get_font(30))
@@ -421,7 +426,6 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
         total_content_h = 70 + total_title_h + (20 if display_subtitle else 0) + total_sub_h
         center_y = 540
 
-        # 白いぼかしシートを描画（しっかり見える大きさ）
         draw_clean_white_blur_base(img1, center_y, total_content_h, box_width=860, max_alpha=235, blur_radius=35, padding_y=55)
 
         d1 = ImageDraw.Draw(img1)

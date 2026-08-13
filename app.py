@@ -1,6 +1,7 @@
 import os
 import io
 import re
+import math
 import requests
 from bs4 import BeautifulSoup
 import streamlit as st
@@ -63,6 +64,7 @@ def clean_scraped_text(text):
     return " ".join(cleaned_lines)
 
 def summarize_text_jp(text, target_chars=150):
+    """150文字程度を維持する"""
     clean_text = clean_scraped_text(text)
     if not clean_text:
         return ""
@@ -124,8 +126,8 @@ def smart_wrap(text, font, max_width):
 
     return lines
 
-def wrap_and_get_font(text, max_width=320, initial_size=22, min_size=13, max_lines=10):
-    """幅320px（中央の丸枠内に収まるサイズ）で折り返し"""
+def wrap_and_get_font(text, max_width=320, initial_size=24, min_size=15, max_lines=10):
+    """文字が丸枠をはみ出さないよう幅320px以内で収める"""
     if not text:
         return [""], get_font(min_size)
 
@@ -217,41 +219,65 @@ def fetch_page_info(url):
             "title": "", "subtitle": "", "date": "", "place": "", "org": "", "summary": "", "error": str(e)
         }
 
+def get_transparent_bg(img, center_radius=290, blur_radius=25, min_alpha=205):
+    """【意図通りに修正】背景画像の「中央の白い円形エリア」だけを半透明にし、背後の花柄を透けさせる"""
+    width, height = img.size
+    cx, cy = width // 2, height // 2
+
+    # RGBAモードで操作するために変換
+    img = img.convert('RGBA')
+    
+    # 完全に同じサイズの透明なレイヤーを作成
+    transparent_img = Image.new('RGBA', (width, height), (255, 255, 255, 0))
+    
+    # 円形のぼかしマスクを作成
+    # 中心から半径中心中心center_radiusの円を描き、そのフチを大きくぼかす
+    draw_circle = ImageDraw.Draw(transparent_img)
+    draw_circle.ellipse(
+        [cx - center_radius, cy - center_radius, cx + center_radius, cy + center_radius],
+        fill=(255, 255, 255, 255)
+    )
+    # フチをぼかす
+    mask = transparent_img.split()[3].filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    
+    # 【ここが重要】マスクを使って、元画像の円形部分だけを「透明度約80%（RGBAのA=205）」にする
+    # 円の外側は元の背景のまま、円の内側だけが透けるようになる
+    pixels = img.load()
+    mask_pixels = mask.load()
+    
+    for x in range(width):
+        for y in range(height):
+            mask_val = mask_pixels[x, y]
+            if mask_val > 0:
+                # 円形マスクが存在する場所（中央部分）を半透明にする
+                current_pixel = pixels[x, y]
+                # Aチャンネル（透明度）を調整
+                # 完全に白くなっている場所を205（約80%の不透明度：透ける）にし、ぼかした部分は滑らかに繋げる
+                new_alpha = max(min_alpha, int(255 - (mask_val * (255 - min_alpha) / 255)))
+                pixels[x, y] = (current_pixel[0], current_pixel[1], current_pixel[2], new_alpha)
+
+    return img
+
 def get_bg(mode):
     target_bg = BG_IMAGE_NOTICE if mode == "お知らせ" else BG_IMAGE_DEFAULT
     bg_p = os.path.join(BASE_DIR, target_bg)
     default_bg_p = os.path.join(BASE_DIR, BG_IMAGE_DEFAULT)
     
     if os.path.exists(bg_p):
-        return Image.open(bg_p).convert('RGBA').resize((1080, 1080))
+        bg_img = Image.open(bg_p)
     elif os.path.exists(default_bg_p):
-        return Image.open(default_bg_p).convert('RGBA').resize((1080, 1080))
+        bg_img = Image.open(default_bg_p)
     else:
-        return Image.new('RGBA', (1080, 1080), color=(255, 255, 255, 255))
-
-def draw_soft_rounded_text_base(img, bbox, alpha=230, blur_radius=20, padding=(30, 25)):
-    """【意図通りに修正】花の背景と文字の間に、角丸でふんわりとした半透明の白いモヤ（座布団）を敷く"""
-    overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
+        # 背景画像がない場合は、真っ白な背景を作成する
+        bg_img = Image.new('RGB', (1080, 1080), color=(255, 255, 255))
     
-    x1, y1, x2, y2 = bbox
-    # テキスト領域に余白を持たせる
-    x1 -= padding[0]
-    y1 -= padding[1]
-    x2 += padding[0]
-    y2 += padding[1]
-    
-    # 真っ白で半透明（alpha）な角丸長方形を描く
-    draw.rounded_rectangle([x1, y1, x2, y2], radius=35, fill=(255, 255, 255, alpha))
-    
-    # 全体にガウスぼかし（GaussianBlur）をかけることで、「四角く角が丸い、ぼやっとしたもの」を表現
-    blurred_overlay = overlay.filter(ImageFilter.GaussianBlur(radius=blur_radius))
-    
-    # 背景の上にアルファ合成
-    img.alpha_composite(blurred_overlay)
+    # 読み込んだ背景画像をリサイズし、中央を半透明にする加工をする
+    bg_img = bg_img.convert('RGB').resize((1080, 1080))
+    bg_img = get_transparent_bg(bg_img, center_radius=280, blur_radius=25, min_alpha=205)
+    return bg_img
 
 def draw_pink_underline(img, center_x, y_bottom, text_width, height=10):
-    """タイトル用のピンクマーカー線"""
+    """タイトルのピンクマーカー線"""
     overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     x1 = center_x - (text_width / 2) - 8
@@ -264,10 +290,7 @@ def draw_pink_underline(img, center_x, y_bottom, text_width, height=10):
     img.alpha_composite(blurred_overlay)
 
 def draw_image_page(img, 挿入画像):
-    """画像ページ（背景に丸い白モヤを敷く）"""
-    image_x1, image_y1, image_x2, image_y2 = 280, 280, 800, 800
-    draw_soft_rounded_text_base(img, [image_x1, image_y1, image_x2, image_y2], padding=(0, 0))
-    
+    """画像ページ"""
     if 挿入画像 is not None:
         try:
             image_bytes = 挿入画像.getvalue()
@@ -276,7 +299,7 @@ def draw_image_page(img, 挿入画像):
                 if insert_img.mode != 'RGBA':
                     insert_img = insert_img.convert('RGBA')
 
-                max_w, max_h = 480, 480
+                max_w, max_h = 500, 500
                 resample_filter = getattr(Image, 'Resampling', Image).LANCZOS
                 insert_img.thumbnail((max_w, max_h), resample_filter)
 
@@ -287,7 +310,7 @@ def draw_image_page(img, 挿入画像):
             st.warning("画像の読み込みに失敗しました。")
 
 def draw_text_page(img, title, text):
-    """テキスト詳細ページ：花の背景と文字の間に「四角で角が丸いぼやっとしたもの」を完璧に再現"""
+    """テキスト詳細ページ：幅320pxに制限して丸枠（半透明化）の中に綺麗に収める"""
     MAX_TEXT_WIDTH = 320
 
     title_lines, f_title = ([], get_font(24))
@@ -306,19 +329,10 @@ def draw_text_page(img, title, text):
 
     total_title_h = len(title_lines) * title_lh
     total_body_h = len(body_lines) * body_lh
-    gap = 18 if total_title_h > 0 and total_body_h > 0 else 0
+    gap = 20 if total_title_h > 0 and total_body_h > 0 else 0
 
     total_content_h = total_title_h + gap + total_body_h
     start_y = 540 - (total_content_h / 2)
-
-    # テキストが存在する全体の領域（bbox）を計算
-    text_bbox_x1 = 540 - (MAX_TEXT_WIDTH / 2)
-    text_bbox_y1 = start_y
-    text_bbox_x2 = 540 + (MAX_TEXT_WIDTH / 2)
-    text_bbox_y2 = start_y + total_content_h
-
-    # 【重要】文字を描画する前に、その背後にふんわりした白いモヤ（座布団）を敷く
-    draw_soft_rounded_text_base(img, [text_bbox_x1, text_bbox_y1, text_bbox_x2, text_bbox_y2], alpha=235, blur_radius=20, padding=(30, 25))
 
     d = ImageDraw.Draw(img)
     curr_y = start_y + (title_lh / 2)
@@ -354,14 +368,10 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
     generated_images = []
 
-    # 1枚目生成
+    # 1枚目生成（中央半透明化済み）
     img1 = get_bg(mode)
 
     if mode == "研修会情報":
-        # 1枚目の文字エリアに合わせて背景にぼかしを敷く
-        box_x1, box_y1, box_x2, box_y2 = 180, 280, 900, 780
-        draw_soft_rounded_text_base(img1, [box_x1, box_y1, box_x2, box_y2])
-
         d1 = ImageDraw.Draw(img1)
         d1.text((540, 320), clean_org, fill=(50, 50, 50), font=f_org, anchor="mm")
 
@@ -400,6 +410,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
         generated_images.append(img1.convert('RGB'))
 
+        # 2枚目生成（中央半透明化済み）
         img2 = get_bg(mode)
         draw_image_page(img2, 挿入画像)
         generated_images.append(img2.convert('RGB'))
@@ -418,9 +429,6 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
         start_y = 540 - (total_height / 2)
 
-        # 1枚目のお知らせ文字に合わせて背景にぼかしを敷く
-        draw_soft_rounded_text_base(img1, [230, start_y, 850, start_y + total_height])
-
         d1 = ImageDraw.Draw(img1)
         d1.text((540, start_y), clean_org, fill=(50, 50, 50), font=f_org, anchor="mm")
 
@@ -431,13 +439,14 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
         if sub_lines:
             curr_y += 10
-            sub_lh = getattr(f_sub_dynamic, 'size', 18) * 1.3
+            sub_lh = getattr(f_sub_dynamic, 'size', 20) * 1.3
             for line in sub_lines:
                 d1.text((540, curr_y), line, fill=(70, 70, 70), font=f_sub_dynamic, anchor="mm")
                 curr_y += sub_lh
 
         generated_images.append(img1.convert('RGB'))
 
+        # 2枚目以降生成（中央半透明化済み）
         if second_type == "📷 画像のみ":
             img2 = get_bg(mode)
             draw_image_page(img2, 挿入画像)
@@ -498,6 +507,7 @@ st.divider()
 
 col1, col2 = st.columns([1, 1])
 
+# Session Stateの初期化
 if "auto_org" not in st.session_state:
     st.session_state["auto_org"] = "（一社）島根県作業療法士会 事務局"
 if "auto_title" not in st.session_state:
@@ -513,12 +523,13 @@ if "auto_summary" not in st.session_state:
 
 with col1:
     with st.expander("🔗 Webページ（URL）から情報を自動読み込み", expanded=False):
-        input_url = st.text_input("研修会やお知らせページのURLを入力", placeholder="https://example.com/event/123")
+        input_url = st.text_input("研修会やお知らせページのURLを入力", placeholder="https://shimane-ot.jp/posts/123")
         if st.button("🌐 情報を自動取得する", use_container_width=True):
             if input_url:
                 with st.spinner("ページ情報を取得中..."):
                     info = fetch_page_info(input_url)
                     if info and not info.get("error"):
+                        # Session Stateに取得した情報を保存
                         st.session_state["auto_title"] = info.get("title", "")
                         st.session_state["auto_subtitle"] = info.get("subtitle", "")
                         st.session_state["auto_date"] = info.get("date", "")
@@ -526,13 +537,14 @@ with col1:
                         st.session_state["auto_org"] = info.get("org", "（一社）島根県作業療法士会 事務局")
                         st.session_state["auto_summary"] = info.get("summary", "")
                         st.success("情報をフォームに反映しました！")
-                        st.rerun()
+                        st.rerun()  # フォームの値を更新するために再レンダリング
                     else:
                         st.error("ページの読み込みに失敗しました。")
 
     st.subheader("📄 1. テキスト入力")
 
     with st.form("input_form"):
+        # フォームの初期値にSession Stateを使用
         if mode == "研修会情報":
             主催 = st.text_input("主催・発信元", value=st.session_state["auto_org"])
             タイトル = st.text_input("研修会名・イベントタイトル", value=st.session_state["auto_title"])
@@ -573,6 +585,7 @@ with col1:
 with col2:
     if submit:
         clean_org = 主催 or ''
+        # 主主催が事務局以外の場合（認知症の作業療法委員会等）、デフォルト主催を上書きする
         images, caption = generate_posts(
             mode, clean_org, タイトル, サブタイトル, 項目1, 項目2, 
             second_type, 挿入画像, 詳細テキスト, ハッシュタグ

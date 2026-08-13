@@ -66,22 +66,22 @@ def fetch_page_info(url):
             if other_h:
                 raw_title = other_h.get_text(strip=True)
 
-        # ★ 括弧を勝手に削除しないよう、前後の空白や改行のみ除去するよう変更
         cleaned_title = raw_title.strip(" \t\n")
 
         title = cleaned_title
         extracted_subtitle = ""
 
-        # サブタイトルの自動分離ロジック
+        # サブタイトルの自動分離ロジック（記号の除去を強化）
         bracket_match = re.search(r'^(.*?)\s*[［\[（\(](.*?)[］\]）\)]$', cleaned_title)
         if bracket_match:
-            title = bracket_match.group(1).strip()
-            extracted_subtitle = bracket_match.group(2).strip()
+            title = bracket_match.group(1).strip(" ［］[]「」『』【】〜~-ー：:")
+            extracted_subtitle = bracket_match.group(2).strip(" ［］[]「」『』【】〜~-ー：:")
         elif any(sep in cleaned_title for sep in [':', '：', '-', '〜', '~', '─']):
             parts = re.split(r'[:：\-〜~─]|\s+-\s+', cleaned_title, maxsplit=1)
-            title = parts[0].strip()
+            title = parts[0].strip(" ［］[]「」『』【】〜~-ー：:")
             if len(parts) > 1:
-                extracted_subtitle = parts[1].strip()
+                # ★ サブタイトルの前後から「〜」や「-」等の余分な区切り記号をきれいに除去
+                extracted_subtitle = parts[1].strip(" ［］[]「」『』【】〜~-ー：:")
 
         # --- 3. 本文テキストの取得 ---
         text = main_content.get_text()
@@ -145,27 +145,24 @@ def draw_white_glow(img, bbox):
     x1, y1, x2, y2 = bbox
     padding = 60
     
-    # ぼかし用アルファチャンネルのマスクを作成
     mask = Image.new('L', (1080, 1080), 0)
     draw_mask = ImageDraw.Draw(mask)
     
-    # 角丸の領域を描画
     rect_box = (max(0, x1 - padding), max(0, y1 - padding), min(1080, x2 + padding), min(1080, y2 + padding))
-    draw_mask.rounded_rectangle(rect_box, radius=40, fill=210) # 210 = 半透明の強さ
+    draw_mask.rounded_rectangle(rect_box, radius=40, fill=210)
     
-    # がっつりぼかしてモヤを作る
     blurred_mask = mask.filter(ImageFilter.GaussianBlur(35))
     
-    # 白色の背景レイヤーを作成して合成
     white_layer = Image.new('RGB', (1080, 1080), (255, 255, 255))
     img.paste(white_layer, (0, 0), blurred_mask)
 
 def smart_wrap(text, font, max_width):
-    """文脈・スペース・区切り記号を考慮して自然な位置で折り返す関数"""
+    """文脈・スペース・単語境界を考慮して変な場所で切れないよう折り返す関数"""
     if not text:
         return []
 
-    tokens = re.split(r'(?<=[、。・\s\─\〜~：:])', text)
+    # 助詞、句読点、スペース、ハイフン等で分割
+    tokens = re.split(r'(?<=[、。・\s\─\〜~：:\-\_\/])', text)
     lines = []
     current_line = ""
 
@@ -196,9 +193,14 @@ def smart_wrap(text, font, max_width):
             w = font.getsize(line)[0]
 
         if w > max_width:
-            char_w = max(1, w / len(line))
-            chars_per_line = max(1, int(max_width / char_w))
-            final_lines.extend(textwrap.wrap(line, width=chars_per_line))
+            # 英語単語や記号のない連続文字の場合は単語を壊さないように折り返し
+            sub_lines = textwrap.wrap(
+                line, 
+                width=max(1, int(len(line) * (max_width / w))),
+                break_long_words=True,
+                break_on_hyphens=False
+            )
+            final_lines.extend(sub_lines)
         else:
             final_lines.append(line)
 
@@ -296,7 +298,6 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
             d1.text((540, place_val_y), 項目2 or "", fill=(30, 30, 30), font=f_val, anchor="mm")
 
     else:
-        # ★ お知らせ用（モヤを描画）
         title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=820, initial_size=60, min_size=32, max_lines=4)
         line_height = getattr(f_title, 'size', 36) * 1.35
         total_height = line_height * len(title_lines)
@@ -308,7 +309,6 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
         start_y = 540 - (total_height / 2)
 
-        # 全体テキストの領域バウンディングボックスを計算して「白いモヤ」を描画
         bbox = (120, int(start_y - 20), 960, int(start_y + total_height + 20))
         draw_white_glow(img1, bbox)
 
@@ -350,9 +350,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
             except Exception:
                 st.warning("画像の読み込みに失敗しました。")
     else:
-        # ★ お知らせ2枚目（文字数が多い場合の縦長防止＆可読性向上）
         if 詳細テキスト and 詳細テキスト.strip():
-            # 150文字を超える長文の場合、横幅を広く取り、行数を最大10行まで許容
             max_w = 820 if len(詳細テキスト) <= 120 else 880
             init_s = 40 if len(詳細テキスト) <= 120 else 32
             min_s = 22
@@ -364,7 +362,6 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
             
             start_y = 540 - (total_height / 2)
 
-            # 白モヤで文字背景をクリアに見せる
             bbox = (540 - (max_w // 2) - 20, int(start_y - 25), 540 + (max_w // 2) + 20, int(start_y + total_height + 25))
             draw_white_glow(img2, bbox)
 

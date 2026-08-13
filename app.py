@@ -126,8 +126,8 @@ def smart_wrap(text, font, max_width):
 
     return lines
 
-def wrap_and_get_font(text, max_width=320, initial_size=24, min_size=15, max_lines=10):
-    """文字が丸枠をはみ出さないよう幅320px以内で収める"""
+def wrap_and_get_font(text, max_width=380, initial_size=28, min_size=18, max_lines=7):
+    """【文字を大きく】フォントサイズ全体を大きく、幅も広げた"""
     if not text:
         return [""], get_font(min_size)
 
@@ -219,46 +219,27 @@ def fetch_page_info(url):
             "title": "", "subtitle": "", "date": "", "place": "", "org": "", "summary": "", "error": str(e)
         }
 
-def get_transparent_bg(img, center_radius=290, blur_radius=25, min_alpha=205):
-    """【意図通りに修正】背景画像の「中央の白い円形エリア」だけを半透明にし、背後の花柄を透けさせる"""
-    width, height = img.size
-    cx, cy = width // 2, height // 2
+def draw_soft_rounded_text_base(img, center_y, lines_count, line_height, max_width=440, alpha=210, blur_radius=25, padding=(30, 20)):
+    """【意図通りに修正】花の背景と文字の間に、角丸でふんわりとした半透明の白いモヤ（座布団）を敷く。文字幅に合わせて。"""
+    overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    
+    # 文字が存在する全体の高さを計算
+    height_span = lines_count * line_height
+    x1 = 540 - (max_width / 2)
+    x2 = 540 + (max_width / 2)
+    y1 = center_y - (height_span / 2) - padding[1]
+    y2 = center_y + (height_span / 2) + padding[1]
 
-    # RGBAモードで操作するために変換
-    img = img.convert('RGBA')
+    # 真っ白で半透明（alpha）な角丸長方形を描く
+    draw.rounded_rectangle([x1, y1, x2, y2], radius=40, fill=(255, 255, 255, alpha))
     
-    # 完全に同じサイズの透明なレイヤーを作成
-    transparent_img = Image.new('RGBA', (width, height), (255, 255, 255, 0))
-    
-    # 円形のぼかしマスクを作成
-    # 中心から半径中心中心center_radiusの円を描き、そのフチを大きくぼかす
-    draw_circle = ImageDraw.Draw(transparent_img)
-    draw_circle.ellipse(
-        [cx - center_radius, cy - center_radius, cx + center_radius, cy + center_radius],
-        fill=(255, 255, 255, 255)
-    )
-    # フチをぼかす
-    mask = transparent_img.split()[3].filter(ImageFilter.GaussianBlur(radius=blur_radius))
-    
-    # 【ここが重要】マスクを使って、元画像の円形部分だけを「透明度約80%（RGBAのA=205）」にする
-    # 円の外側は元の背景のまま、円の内側だけが透けるようになる
-    pixels = img.load()
-    mask_pixels = mask.load()
-    
-    for x in range(width):
-        for y in range(height):
-            mask_val = mask_pixels[x, y]
-            if mask_val > 0:
-                # 円形マスクが存在する場所（中央部分）を半透明にする
-                current_pixel = pixels[x, y]
-                # Aチャンネル（透明度）を調整
-                # 完全に白くなっている場所を205（約80%の不透明度：透ける）にし、ぼかした部分は滑らかに繋げる
-                new_alpha = max(min_alpha, int(255 - (mask_val * (255 - min_alpha) / 255)))
-                pixels[x, y] = (current_pixel[0], current_pixel[1], current_pixel[2], new_alpha)
-
-    return img
+    # ガウスぼかしを大きめにかけることで四角くならず「ふんわりした白いモヤ」にする
+    blurred_overlay = overlay.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    img.alpha_composite(blurred_overlay)
 
 def get_bg(mode):
+    """【白い円の処理を削除】背景画像をそのまま読み込みリサイズのみ実行"""
     target_bg = BG_IMAGE_NOTICE if mode == "お知らせ" else BG_IMAGE_DEFAULT
     bg_p = os.path.join(BASE_DIR, target_bg)
     default_bg_p = os.path.join(BASE_DIR, BG_IMAGE_DEFAULT)
@@ -268,16 +249,14 @@ def get_bg(mode):
     elif os.path.exists(default_bg_p):
         bg_img = Image.open(default_bg_p)
     else:
-        # 背景画像がない場合は、真っ白な背景を作成する
         bg_img = Image.new('RGB', (1080, 1080), color=(255, 255, 255))
     
-    # 読み込んだ背景画像をリサイズし、中央を半透明にする加工をする
-    bg_img = bg_img.convert('RGB').resize((1080, 1080))
-    bg_img = get_transparent_bg(bg_img, center_radius=280, blur_radius=25, min_alpha=205)
+    # リサイズしてRGBAモードで操作するために変換
+    bg_img = bg_img.convert('RGBA').resize((1080, 1080))
     return bg_img
 
 def draw_pink_underline(img, center_x, y_bottom, text_width, height=10):
-    """タイトルのピンクマーカー線"""
+    """タイトル用のピンクマーカー線"""
     overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     x1 = center_x - (text_width / 2) - 8
@@ -310,29 +289,35 @@ def draw_image_page(img, 挿入画像):
             st.warning("画像の読み込みに失敗しました。")
 
 def draw_text_page(img, title, text):
-    """テキスト詳細ページ：幅320pxに制限して丸枠（半透明化）の中に綺麗に収める"""
-    MAX_TEXT_WIDTH = 320
+    """テキスト詳細ページ：花の背景と文字の間に「白いモヤ」を敷き、幅380pxに制限して文字を描画"""
+    MAX_TEXT_WIDTH = 380
 
-    title_lines, f_title = ([], get_font(24))
+    title_lines, f_title = ([], get_font(26))
     if title and title.strip():
         clean_t = clean_scraped_text(title)
-        title_lines, f_title = wrap_and_get_font(clean_t, max_width=MAX_TEXT_WIDTH, initial_size=24, min_size=18, max_lines=2)
+        title_lines, f_title = wrap_and_get_font(clean_t, max_width=MAX_TEXT_WIDTH, initial_size= initial_size=28, min_size=20, max_lines=2)
 
     display_text = text if len(text) <= 150 else summarize_text_jp(text, target_chars=150)
-    body_lines, f_body = wrap_and_get_font(display_text, max_width=MAX_TEXT_WIDTH, initial_size=20, min_size=13, max_lines=10)
+    body_lines, f_body = wrap_and_get_font(display_text, max_width=MAX_TEXT_WIDTH, initial_size= initial_size=22, min_size=16, max_lines=8)
 
-    title_size = getattr(f_title, 'size', 24)
-    body_size = getattr(f_body, 'size', 18)
+    title_size = getattr(f_title, 'size', 26)
+    body_size = getattr(f_body, 'size', 20)
 
-    title_lh = title_size * 1.4
-    body_lh = body_size * 1.45
+    # 行間を調整
+    title_lh = title_size * 1.45
+    body_lh = body_size * 1.5
 
     total_title_h = len(title_lines) * title_lh
     total_body_h = len(body_lines) * body_lh
-    gap = 20 if total_title_h > 0 and total_body_h > 0 else 0
+    gap = 25 if total_title_h > 0 and total_body_h > 0 else 0
 
     total_content_h = total_title_h + gap + total_body_h
     start_y = 540 - (total_content_h / 2)
+
+    # 文字がある位置に合わせて背景に「ふんわりした白いモヤ」を描画
+    center_y = start_y + (total_content_h / 2)
+    # 文字幅380pxに少し余白を持たせた座布団を敷く
+    draw_soft_rounded_text_base(img, center_y, 1, total_content_h, max_width=420, alpha=220, blur_radius=30, padding=(30, 30))
 
     d = ImageDraw.Draw(img)
     curr_y = start_y + (title_lh / 2)
@@ -345,6 +330,7 @@ def draw_text_page(img, title, text):
             except AttributeError:
                 w = f_title.getsize(line)[0]
 
+            # マーカー線を文字の下に
             draw_pink_underline(img, 540, curr_y + (title_size / 2) - 3, w, height=8)
             d.text((540, curr_y), line, fill=(30, 30, 30), font=f_title, anchor="mm")
             curr_y += title_lh
@@ -359,24 +345,29 @@ def draw_text_page(img, title, text):
         curr_y += body_lh
 
 def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項目2, second_type, 挿入画像, 詳細テキスト, ハッシュタグ):
-    f_org = get_font(26)
-    f_label = get_font(22)
-    f_val = get_font(26)
+    f_org = get_font(28)
+    f_label = get_font(24)
+    f_val = get_font(28)
 
     clean_org = 主催 or '（一社）島根県作業療法士会 事務局'
     display_subtitle = f"〜 {サブタイトル.strip(' 〜~')} 〜" if サブタイトル and サブタイトル.strip() else ""
 
     generated_images = []
 
-    # 1枚目生成（中央半透明化済み）
+    # 1枚目生成
     img1 = get_bg(mode)
 
     if mode == "研修会情報":
+        # 文字がある場所に白いモヤを敷く（主催＋タイトル＋日時＋場所）
+        total_content_h = 550
+        draw_soft_rounded_text_base(img1, 540, 1, total_content_h, max_width=440, alpha=220, blur_radius=30, padding=(30, 30))
+
         d1 = ImageDraw.Draw(img1)
         d1.text((540, 320), clean_org, fill=(50, 50, 50), font=f_org, anchor="mm")
 
-        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=320, initial_size=28, min_size=18, max_lines=3)
-        font_size = getattr(f_title, 'size', 24)
+        # タイトルも大きく、幅も広げた
+        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=380, initial_size=32, min_size=20, max_lines=3)
+        font_size = getattr(f_title, 'size', 28)
         line_height = font_size * 1.4
         total_title_height = line_height * len(title_lines)
         title_start_y = 390 + (line_height / 2)
@@ -388,8 +379,9 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
         current_y = title_start_y + total_title_height + 15
 
         if display_subtitle:
-            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=300, initial_size=20, min_size=15, max_lines=2)
-            sub_line_height = getattr(f_sub_dynamic, 'size', 18) * 1.3
+            # サブタイトルも大きく
+            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=360, initial_size=22, min_size=16, max_lines=2)
+            sub_line_height = getattr(f_sub_dynamic, 'size', 20) * 1.3
             for line in sub_lines:
                 d1.text((540, current_y), line, fill=(60, 60, 60), font=f_sub_dynamic, anchor="mm")
                 current_y += sub_line_height
@@ -410,24 +402,26 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
         generated_images.append(img1.convert('RGB'))
 
-        # 2枚目生成（中央半透明化済み）
         img2 = get_bg(mode)
         draw_image_page(img2, 挿入画像)
         generated_images.append(img2.convert('RGB'))
 
     else:
         # お知らせ 1枚目
-        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=320, initial_size=28, min_size=18, max_lines=3)
-        font_size = getattr(f_title, 'size', 24)
+        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=380, initial_size=32, min_size=20, max_lines=3)
+        font_size = getattr(f_title, 'size', 28)
         line_height = font_size * 1.45
         total_height = line_height * len(title_lines) + 40
 
-        sub_lines, f_sub_dynamic = ([], get_font(20))
+        sub_lines, f_sub_dynamic = ([], get_font(22))
         if display_subtitle:
-            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=300, initial_size=20, min_size=15, max_lines=2)
-            total_height += (getattr(f_sub_dynamic, 'size', 18) * 1.3 * len(sub_lines)) + 15
+            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=360, initial_size=22, min_size=16, max_lines=2)
+            total_height += (getattr(f_sub_dynamic, 'size', 20) * 1.3 * len(sub_lines)) + 15
 
         start_y = 540 - (total_height / 2)
+
+        # お知らせの文字に合わせて白いモヤを敷く
+        draw_soft_rounded_text_base(img1, 540, 1, total_height, max_width=440, alpha=220, blur_radius=30, padding=(30, 30))
 
         d1 = ImageDraw.Draw(img1)
         d1.text((540, start_y), clean_org, fill=(50, 50, 50), font=f_org, anchor="mm")
@@ -446,7 +440,6 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
         generated_images.append(img1.convert('RGB'))
 
-        # 2枚目以降生成（中央半透明化済み）
         if second_type == "📷 画像のみ":
             img2 = get_bg(mode)
             draw_image_page(img2, 挿入画像)

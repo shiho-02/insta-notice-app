@@ -39,28 +39,24 @@ def get_font(size):
     return ImageFont.load_default()
 
 def clean_scraped_text(text):
-    """Webページの不要なナビゲーション・SNSボタン・カテゴリ文字列を除去"""
+    """不要なメタデータ・ノイズ文字列を完全除外"""
     if not text:
         return ""
-    # URL除去
     text = re.sub(r'https?://[^\s\u3000]+', '', text)
-    # ご指定の不要ノイズ単語の除外
     noise_patterns = [
         r'会員の方へ', r'会員動向', r'Tweet', r'tweet', r'シェア', r'LINE', r'Facebook',
         r'はてブ', r'ポケット', r'印刷', r'認知症の作業療法委員会', r'カテゴリー[:：]?', r'タグ[:：]?',
-        r'ホーム', r'お知らせ', r'記事一覧'
+        r'ホーム', r'お知らせ', r'記事一覧', r'投稿日[:：]?', r'更新日[:：]?'
     ]
     for pat in noise_patterns:
         text = re.sub(pat, '', text, flags=re.IGNORECASE)
     
-    # 行ごとのクリーンアップ
     lines = text.split('\n')
     cleaned_lines = []
     for line in lines:
         l = line.strip()
         if not l:
             continue
-        # 日付署名パターン等を除外
         if re.search(r'^(令和|平成|20\d\d年|\d{4}年)', l) or re.search(r'@|小林央', l) and len(l) < 25:
             if "参加" not in l and "開催" not in l:
                 continue
@@ -68,7 +64,7 @@ def clean_scraped_text(text):
     return " ".join(cleaned_lines)
 
 def summarize_text_jp(text, max_chars=90):
-    """円の中に収まる短く自然な文章に要約"""
+    """円の中に綺麗に収まる文章に要約"""
     clean_text = clean_scraped_text(text)
     if not clean_text:
         return ""
@@ -97,7 +93,7 @@ def summarize_text_jp(text, max_chars=90):
     return res
 
 def smart_wrap(text, font, max_width):
-    """折り返し制御（1文字だけの孤立行を抑止）"""
+    """孤立文字をなくす自然な折り返し"""
     if not text:
         return []
 
@@ -140,8 +136,8 @@ def smart_wrap(text, font, max_width):
 
     return lines
 
-def wrap_and_get_font(text, max_width=500, initial_size=36, min_size=22, max_lines=3):
-    """円形デザインに収まるフォントサイズと改行の決定"""
+def wrap_and_get_font(text, max_width=480, initial_size=36, min_size=22, max_lines=3):
+    """フォントサイズ調整"""
     if not text:
         return [""], get_font(min_size)
 
@@ -158,7 +154,7 @@ def wrap_and_get_font(text, max_width=500, initial_size=36, min_size=22, max_lin
     return lines[:max_lines], font
 
 def fetch_page_info(url):
-    """Webページからタイトル・本文・組織名（委員会名）を正確に自動判定"""
+    """Webページ情報自動判定"""
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -169,8 +165,13 @@ def fetch_page_info(url):
         res.encoding = res.apparent_encoding
         soup = BeautifulSoup(res.text, 'html.parser')
 
-        # 不要な要素の削ぎ落とし
-        for tag in soup(['script', 'style', 'nav', 'header', 'footer', 'aside', '.share', '.sns', '.social']):
+        raw_full_text = soup.get_text()
+
+        for tag in soup([
+            'script', 'style', 'nav', 'header', 'footer', 'aside',
+            '.share', '.sns', '.social', '.entry-meta', '.cat-links',
+            '.post-meta', '.meta', '.byline', '.author', '.posted-on'
+        ]):
             tag.decompose()
 
         main_content = soup.find('article') or soup.find(class_=re.compile(r'entry-content|post-content|main|content'))
@@ -184,7 +185,6 @@ def fetch_page_info(url):
         elif soup.title and soup.title.string:
             raw_title = soup.title.string.strip()
 
-        # タイトルのクリーンアップ
         raw_title = re.sub(r'[\-|\||│].*$', '', raw_title).strip()
         cleaned_title = clean_scraped_text(raw_title).strip(" ［］[]「」『』【】\t\n")
 
@@ -196,20 +196,17 @@ def fetch_page_info(url):
             title = bracket_match.group(1).strip(" ［］[]「」『』【】")
             extracted_subtitle = bracket_match.group(2).strip(" ［］[]「」『』【】")
 
-        full_text = soup.get_text()
-
-        date_match = re.search(r'(日時|開催日時)[:：\s]*([^\n]+)', full_text)
-        place_match = re.search(r'(場所|開催場所|会場)[:：\s]*([^\n]+)', full_text)
+        date_match = re.search(r'(日時|開催日時)[:：\s]*([^\n]+)', raw_full_text)
+        place_match = re.search(r'(場所|開催場所|会場)[:：\s]*([^\n]+)', raw_full_text)
 
         extracted_date = date_match.group(2).strip() if date_match else ""
         extracted_place = place_match.group(2).strip() if place_match else ""
 
-        # 主催者／委員会の自動判別ロジック
         extracted_org = "（一社）島根県作業療法士会 事務局"
-        if "認知症の作業療法委員会" in full_text:
+        if "認知症の作業療法委員会" in raw_full_text:
             extracted_org = "（一社）島根県作業療法士会 認知症の作業療法委員会"
         else:
-            comm_match = re.search(r'([^\s\n]+?委員会)', full_text)
+            comm_match = re.search(r'([^\s\n]+?委員会)', raw_full_text)
             if comm_match:
                 comm_name = comm_match.group(1).strip()
                 if "作業療法士会" not in comm_name:
@@ -244,15 +241,36 @@ def get_bg(mode):
     else:
         return Image.new('RGB', (1080, 1080), color=(255, 255, 255))
 
-def draw_pink_underline(img, center_x, y_bottom, text_width, height=8):
+def draw_white_background_blur(img, center_x=540, center_y=540, radius=290, blur_radius=20):
+    """【白ぼかし復元】文字の背後に柔らかい背景白ぼかし円を描画"""
     overlay = Image.new('RGBA', img.size, (255, 255, 255, 0))
     draw = ImageDraw.Draw(overlay)
-    x1 = center_x - (text_width / 2) - 8
-    x2 = center_x + (text_width / 2) + 8
+    x1 = center_x - radius
+    y1 = center_y - radius
+    x2 = center_x + radius
+    y2 = center_y + radius
+    
+    # 半透明の白丸を描画
+    draw.ellipse([x1, y1, x2, y2], fill=(255, 255, 255, 235))
+    
+    # 外周にガウスぼかしを適用
+    blurred = overlay.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    
+    # 元画像と合成
+    img.paste(blurred, (0, 0), blurred)
+
+def draw_pink_underline(img, center_x, y_bottom, text_width, height=12):
+    """マーカー風ピンク下線（ぼかし付き）"""
+    overlay = Image.new('RGBA', img.size, (255, 255, 255, 0))
+    draw = ImageDraw.Draw(overlay)
+    x1 = center_x - (text_width / 2) - 10
+    x2 = center_x + (text_width / 2) + 10
     y1 = y_bottom - (height / 2)
     y2 = y_bottom + (height / 2)
-    draw.rounded_rectangle([x1, y1, x2, y2], radius=height//2, fill=(255, 150, 180, 180))
-    img.paste(overlay, (0, 0), overlay)
+    
+    draw.rounded_rectangle([x1, y1, x2, y2], radius=height//2, fill=(255, 130, 170, 200))
+    blurred_overlay = overlay.filter(ImageFilter.GaussianBlur(radius=3))
+    img.paste(blurred_overlay, (0, 0), blurred_overlay)
 
 def draw_image_page(img, 挿入画像):
     if 挿入画像 is not None:
@@ -274,8 +292,11 @@ def draw_image_page(img, 挿入画像):
             st.warning("画像の読み込みに失敗しました。")
 
 def draw_text_page(img, title, text):
-    """テキスト詳細ページ：円形フレームの中心（540, 540）に完全中央揃え"""
-    max_circle_w = 480
+    """テキスト詳細ページ：白ぼかしベースの上に上下左右中央配置"""
+    # 1. 背後の白ぼかしを描画
+    draw_white_background_blur(img, center_x=540, center_y=540, radius=290, blur_radius=15)
+
+    max_circle_w = 460
 
     title_lines, f_title = ([], get_font(30))
     if title and title.strip():
@@ -289,15 +310,16 @@ def draw_text_page(img, title, text):
     title_size = getattr(f_title, 'size', 30)
     body_size = getattr(f_body, 'size', 24)
 
-    title_lh = title_size * 1.4
+    title_lh = title_size * 1.45
     body_lh = body_size * 1.6
 
     total_title_h = len(title_lines) * title_lh
     total_body_h = len(body_lines) * body_lh
-    gap = 30 if total_title_h > 0 and total_body_h > 0 else 0
+    gap = 35 if total_title_h > 0 and total_body_h > 0 else 0
 
     total_content_h = total_title_h + gap + total_body_h
 
+    # 円の中心 Y=540 から上下均等に配置計算
     start_y = 540 - (total_content_h / 2)
 
     d = ImageDraw.Draw(img)
@@ -310,7 +332,7 @@ def draw_text_page(img, title, text):
             except AttributeError:
                 w = f_title.getsize(line)[0]
 
-            draw_pink_underline(img, 540, curr_y + (title_size / 2) - 2, w, height=8)
+            draw_pink_underline(img, 540, curr_y + (title_size / 2) - 2, w, height=12)
             d.text((540, curr_y), line, fill=(30, 30, 30), font=f_title, anchor="mm")
             curr_y += title_lh
 
@@ -339,7 +361,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
         d1 = ImageDraw.Draw(img1)
         d1.text((540, 310), clean_org, fill=(40, 40, 40), font=f_org, anchor="mm")
 
-        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=500, initial_size=40, min_size=22, max_lines=3)
+        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=480, initial_size=40, min_size=22, max_lines=3)
         font_size = getattr(f_title, 'size', 32)
         line_height = font_size * 1.4
         total_title_height = line_height * len(title_lines)
@@ -352,7 +374,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
         current_y = title_start_y + total_title_height + 15
 
         if display_subtitle:
-            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=480, initial_size=26, min_size=18, max_lines=2)
+            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=460, initial_size=26, min_size=18, max_lines=2)
             sub_line_height = getattr(f_sub_dynamic, 'size', 24) * 1.25
             for line in sub_lines:
                 d1.text((540, current_y), line, fill=(60, 60, 60), font=f_sub_dynamic, anchor="mm")
@@ -379,15 +401,17 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
         generated_images.append(img2)
 
     else:
-        # お知らせ 1枚目
-        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=500, initial_size=40, min_size=22, max_lines=3)
+        # お知らせ 1枚目（背後に白ぼかし追加）
+        draw_white_background_blur(img1, center_x=540, center_y=540, radius=290, blur_radius=15)
+
+        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=480, initial_size=40, min_size=22, max_lines=3)
         font_size = getattr(f_title, 'size', 32)
         line_height = font_size * 1.45
         total_height = line_height * len(title_lines) + 50
 
         sub_lines, f_sub_dynamic = ([], get_font(26))
         if display_subtitle:
-            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=480, initial_size=26, min_size=18, max_lines=2)
+            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=460, initial_size=26, min_size=18, max_lines=2)
             total_height += (getattr(f_sub_dynamic, 'size', 24) * 1.3 * len(sub_lines)) + 15
 
         start_y = 540 - (total_height / 2)

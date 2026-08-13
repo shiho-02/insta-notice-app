@@ -38,74 +38,66 @@ def get_font(size):
                 continue
     return ImageFont.load_default()
 
-def clean_blog_text(text):
-    """URLや署名、日時などのノイズを除去して本文のみを抽出"""
+def clean_scraped_text(text):
+    """Webページの不要なナビゲーション・SNSボタン・カテゴリ文字列を除去"""
     if not text:
         return ""
-    # URLの除去
+    # URL除去
     text = re.sub(r'https?://[^\s\u3000]+', '', text)
-    # 日付や署名などの末尾ノイズ行を除去（例：令和8年7月23日、@大田市...、氏名など）
+    # ご指定の不要ノイズ単語の除外
+    noise_patterns = [
+        r'会員の方へ', r'会員動向', r'Tweet', r'tweet', r'シェア', r'LINE', r'Facebook',
+        r'はてブ', r'ポケット', r'印刷', r'認知症の作業療法委員会', r'カテゴリー[:：]?', r'タグ[:：]?',
+        r'ホーム', r'お知らせ', r'記事一覧'
+    ]
+    for pat in noise_patterns:
+        text = re.sub(pat, '', text, flags=re.IGNORECASE)
+    
+    # 行ごとのクリーンアップ
     lines = text.split('\n')
     cleaned_lines = []
     for line in lines:
         l = line.strip()
         if not l:
             continue
-        # 日付署名パターンを除外
-        if re.search(r'^(令和|平成|20\d\d年|\d{4}年)', l) or re.search(r'@|チーム員会議|小林|事務局', l) and len(l) < 30:
-            if "参加してきました" not in l and "開催" not in l:
+        # 日付署名パターン等を除外
+        if re.search(r'^(令和|平成|20\d\d年|\d{4}年)', l) or re.search(r'@|小林央', l) and len(l) < 25:
+            if "参加" not in l and "開催" not in l:
                 continue
         cleaned_lines.append(l)
     return " ".join(cleaned_lines)
 
-def summarize_text_jp(text, max_chars=120):
-    """ブログ・報告記事等をAI風に分析し、120文字程度の自然な完結文に集約"""
-    clean_text = clean_blog_text(text)
+def summarize_text_jp(text, max_chars=90):
+    """円の中に収まる短く自然な文章に要約"""
+    clean_text = clean_scraped_text(text)
     if not clean_text:
         return ""
 
-    # 余分な記号・箇条書き・連続空白の除去
     clean_text = re.sub(r'^[・\-*•\d+\.]+\s*', '', clean_text, flags=re.MULTILINE)
     clean_text = re.sub(r'\s+', ' ', clean_text).strip()
 
-    # 句点（。！？）で文に分割
-    raw_sentences = re.split(r'(?<=[。！？!\?])', clean_text)
-    valid_sentences = [s.strip() for s in raw_sentences if len(s.strip()) > 5]
+    sentences = re.split(r'(?<=[。！？!\?])', clean_text)
+    sentences = [s.strip() for s in sentences if len(s.strip()) > 5]
 
-    selected_sentences = []
-    current_len = 0
-
-    for sentence in valid_sentences:
-        if current_len + len(sentence) <= max_chars:
-            selected_sentences.append(sentence)
-            current_len += len(sentence)
+    selected = []
+    curr_len = 0
+    for s in sentences:
+        if curr_len + len(s) <= max_chars:
+            selected.append(s)
+            curr_len += len(s)
         else:
             break
 
-    # 1文目すら長すぎる場合は自然な読点で区切る
-    if not selected_sentences and valid_sentences:
-        first_s = valid_sentences[0]
-        comma_parts = re.split(r'(?<=[、,])', first_s)
-        sub_build = ""
-        for part in comma_parts:
-            if len(sub_build) + len(part) <= max_chars - 10:
-                sub_build += part
-            else:
-                break
-        if sub_build:
-            sub_build = re.sub(r'(について|の|および|また|における|等|など|へ|より|で)$', '', sub_build.strip())
-            return sub_build + "についてご報告いたします。"
-        else:
-            return first_s[:max_chars - 10] + "についてご報告いたします。"
+    if not selected and sentences:
+        return sentences[0][:max_chars-5] + "..."
 
-    result = "".join(selected_sentences).strip()
-    if result and not result.endswith(('。', '！', '？', '!')):
-        result += "。"
-
-    return result
+    res = "".join(selected).strip()
+    if res and not res.endswith(('。', '！', '？')):
+        res += "。"
+    return res
 
 def smart_wrap(text, font, max_width):
-    """単語・文脈（BudouX）を意識した自然な改行処理"""
+    """折り返し制御（1文字だけの孤立行を抑止）"""
     if not text:
         return []
 
@@ -141,11 +133,15 @@ def smart_wrap(text, font, max_width):
                         current_line = char
 
     if current_line:
-        lines.append(current_line)
+        if len(lines) > 0 and len(current_line) <= 2:
+            lines[-1] += current_line
+        else:
+            lines.append(current_line)
+
     return lines
 
-def wrap_and_get_font(text, max_width=820, initial_size=52, min_size=24, max_lines=3):
-    """自然な折り返しと最適なフォントサイズの算出"""
+def wrap_and_get_font(text, max_width=500, initial_size=36, min_size=22, max_lines=3):
+    """円形デザインに収まるフォントサイズと改行の決定"""
     if not text:
         return [""], get_font(min_size)
 
@@ -162,7 +158,7 @@ def wrap_and_get_font(text, max_width=820, initial_size=52, min_size=24, max_lin
     return lines[:max_lines], font
 
 def fetch_page_info(url):
-    """Webページからタイトル・サブタイトル・各種情報を自動読み込み"""
+    """Webページからタイトル・本文・組織名（委員会名）を正確に自動判定"""
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -170,9 +166,12 @@ def fetch_page_info(url):
         }
         res = requests.get(url, headers=headers, timeout=10, verify=False)
         res.raise_for_status()
-        
         res.encoding = res.apparent_encoding
         soup = BeautifulSoup(res.text, 'html.parser')
+
+        # 不要な要素の削ぎ落とし
+        for tag in soup(['script', 'style', 'nav', 'header', 'footer', 'aside', '.share', '.sns', '.social']):
+            tag.decompose()
 
         main_content = soup.find('article') or soup.find(class_=re.compile(r'entry-content|post-content|main|content'))
         if not main_content:
@@ -180,14 +179,14 @@ def fetch_page_info(url):
 
         raw_title = ""
         title_tag = soup.find(['h1', 'h2'], class_=re.compile(r'entry-title|post-title|title')) or main_content.find(['h1', 'h2'])
-        
         if title_tag and title_tag.get_text(strip=True):
             raw_title = title_tag.get_text(strip=True)
         elif soup.title and soup.title.string:
             raw_title = soup.title.string.strip()
 
+        # タイトルのクリーンアップ
         raw_title = re.sub(r'[\-|\||│].*$', '', raw_title).strip()
-        cleaned_title = raw_title.strip(" ［］[]「」『』【】\t\n")
+        cleaned_title = clean_scraped_text(raw_title).strip(" ［］[]「」『』【】\t\n")
 
         title = cleaned_title
         extracted_subtitle = ""
@@ -196,47 +195,29 @@ def fetch_page_info(url):
         if bracket_match:
             title = bracket_match.group(1).strip(" ［］[]「」『』【】")
             extracted_subtitle = bracket_match.group(2).strip(" ［］[]「」『』【】")
-        elif any(sep in cleaned_title for sep in [':', '：', '-', '〜', '~', '─']):
-            parts = re.split(r'[:：\-〜~─]|\s+-\s+', cleaned_title, maxsplit=1)
-            title = parts[0].strip(" ［］[]「」『』【】〜~")
-            if len(parts) > 1:
-                extracted_subtitle = parts[1].strip(" ［］[]「」『』【】〜~")
 
-        text = main_content.get_text()
+        full_text = soup.get_text()
 
-        date_match = re.search(r'(日時|開催日時|日 時)[:：\s]*([^\n]+)', text)
-        place_match = re.search(r'(場所|開催場所|会場|場 所)[:：\s]*([^\n]+)', text)
+        date_match = re.search(r'(日時|開催日時)[:：\s]*([^\n]+)', full_text)
+        place_match = re.search(r'(場所|開催場所|会場)[:：\s]*([^\n]+)', full_text)
 
         extracted_date = date_match.group(2).strip() if date_match else ""
         extracted_place = place_match.group(2).strip() if place_match else ""
 
-        extracted_org = ""
-        ignore_words = ["庶務", "サイトマップ", "注意事項", "免責事項", "参加", "研修会", "案内", "詳細"]
-
-        sender_match = re.search(r'(発信元|担当|主催|主催者|問合せ先|問い合わせ)[:：\s]*([^\n]+)', text)
-        if sender_match:
-            candidate_sender = sender_match.group(2).strip().strip(" ［］[]「」『』【】\t\n")
-            if not any(word in candidate_sender for word in ignore_words) and len(candidate_sender) <= 30:
-                if candidate_sender != raw_title and candidate_sender != "研修会情報":
-                    extracted_org = candidate_sender
-
-        if not extracted_org:
-            group_match = re.search(r'([^\s\n]+?(?:グループ|チーム|部|委員会|局|事務局))', text)
-            if group_match:
-                candidate_group = group_match.group(1).strip().strip(" ［］[]「」『』【】\t\n")
-                if candidate_group not in title and not any(word in candidate_group for word in ignore_words) and len(candidate_group) <= 20:
-                    extracted_org = candidate_group
-
-        if "事務局" in text and not extracted_org:
-            extracted_org = "事務局"
-
-        if extracted_org:
-            if "作業療法士会" not in extracted_org and "島根" not in extracted_org:
-                extracted_org = f"（一社）島根県作業療法士会 {extracted_org}"
+        # 主催者／委員会の自動判別ロジック
+        extracted_org = "（一社）島根県作業療法士会 事務局"
+        if "認知症の作業療法委員会" in full_text:
+            extracted_org = "（一社）島根県作業療法士会 認知症の作業療法委員会"
         else:
-            extracted_org = "（一社）島根県作業療法士会 事務局"
+            comm_match = re.search(r'([^\s\n]+?委員会)', full_text)
+            if comm_match:
+                comm_name = comm_match.group(1).strip()
+                if "作業療法士会" not in comm_name:
+                    extracted_org = f"（一社）島根県作業療法士会 {comm_name}"
+                else:
+                    extracted_org = comm_name
 
-        extracted_summary = summarize_text_jp(text, max_chars=120)
+        extracted_summary = summarize_text_jp(main_content.get_text(), max_chars=90)
 
         return {
             "title": title,
@@ -252,30 +233,10 @@ def fetch_page_info(url):
             "title": "", "subtitle": "", "date": "", "place": "", "org": "", "summary": "", "error": str(e)
         }
 
-def draw_white_glow(img, bbox, mode="glow"):
-    """白背景カードの描画"""
-    x1, y1, x2, y2 = bbox
-    mask = Image.new('L', (1080, 1080), 0)
-    draw_mask = ImageDraw.Draw(mask)
-    
-    if mode == "card":
-        rect_box = (x1, y1, x2, y2)
-        draw_mask.rounded_rectangle(rect_box, radius=30, fill=230)
-        blurred_mask = mask.filter(ImageFilter.GaussianBlur(15))
-    else:
-        padding = 40
-        rect_box = (max(0, x1 - padding), max(0, y1 - padding), min(1080, x2 + padding), min(1080, y2 + padding))
-        draw_mask.rounded_rectangle(rect_box, radius=40, fill=220)
-        blurred_mask = mask.filter(ImageFilter.GaussianBlur(25))
-    
-    white_layer = Image.new('RGB', (1080, 1080), (255, 255, 255))
-    img.paste(white_layer, (0, 0), blurred_mask)
-
 def get_bg(mode):
     target_bg = BG_IMAGE_NOTICE if mode == "お知らせ" else BG_IMAGE_DEFAULT
     bg_p = os.path.join(BASE_DIR, target_bg)
     default_bg_p = os.path.join(BASE_DIR, BG_IMAGE_DEFAULT)
-    
     if os.path.exists(bg_p):
         return Image.open(bg_p).convert('RGB').resize((1080, 1080))
     elif os.path.exists(default_bg_p):
@@ -283,16 +244,14 @@ def get_bg(mode):
     else:
         return Image.new('RGB', (1080, 1080), color=(255, 255, 255))
 
-def draw_pink_underline(img, center_x, y_bottom, text_width, height=12):
+def draw_pink_underline(img, center_x, y_bottom, text_width, height=8):
     overlay = Image.new('RGBA', img.size, (255, 255, 255, 0))
     draw = ImageDraw.Draw(overlay)
-    
-    x1 = center_x - (text_width / 2) - 10
-    x2 = center_x + (text_width / 2) + 10
+    x1 = center_x - (text_width / 2) - 8
+    x2 = center_x + (text_width / 2) + 8
     y1 = y_bottom - (height / 2)
     y2 = y_bottom + (height / 2)
-    
-    draw.rounded_rectangle([x1, y1, x2, y2], radius=height//2, fill=(255, 150, 180, 190))
+    draw.rounded_rectangle([x1, y1, x2, y2], radius=height//2, fill=(255, 150, 180, 180))
     img.paste(overlay, (0, 0), overlay)
 
 def draw_image_page(img, 挿入画像):
@@ -304,7 +263,7 @@ def draw_image_page(img, 挿入画像):
                 if insert_img.mode != 'RGBA':
                     insert_img = insert_img.convert('RGBA')
 
-                max_w, max_h = 800, 800
+                max_w, max_h = 750, 750
                 resample_filter = getattr(Image, 'Resampling', Image).LANCZOS
                 insert_img.thumbnail((max_w, max_h), resample_filter)
 
@@ -315,52 +274,43 @@ def draw_image_page(img, 挿入画像):
             st.warning("画像の読み込みに失敗しました。")
 
 def draw_text_page(img, title, text):
-    """テキスト詳細画面（完全上下左右センタリング）"""
-    target_text_w = 660
-    
-    # 要約文の取得
-    clean_summary_text = summarize_text_jp(text, max_chars=120)
+    """テキスト詳細ページ：円形フレームの中心（540, 540）に完全中央揃え"""
+    max_circle_w = 480
 
-    # タイトルと本文の行分割
-    title_lines, f_title = ([], get_font(32))
+    title_lines, f_title = ([], get_font(30))
     if title and title.strip():
-        title_lines, f_title = wrap_and_get_font(title, max_width=680, initial_size=36, min_size=24, max_lines=2)
+        clean_t = clean_scraped_text(title)
+        title_lines, f_title = wrap_and_get_font(clean_t, max_width=max_circle_w, initial_size=32, min_size=22, max_lines=2)
 
-    font_size = 26
-    f_detail = get_font(font_size)
-    body_lines = smart_wrap(clean_summary_text, f_detail, target_text_w) if clean_summary_text else []
+    clean_summary_text = summarize_text_jp(text, max_chars=90)
+    f_body = get_font(24)
+    body_lines = smart_wrap(clean_summary_text, f_body, max_circle_w) if clean_summary_text else []
 
-    title_lh = getattr(f_title, 'size', 32) * 1.35
-    body_lh = font_size * 1.65
+    title_size = getattr(f_title, 'size', 30)
+    body_size = getattr(f_body, 'size', 24)
+
+    title_lh = title_size * 1.4
+    body_lh = body_size * 1.6
 
     total_title_h = len(title_lines) * title_lh
     total_body_h = len(body_lines) * body_lh
-    gap = 35 if total_title_h > 0 else 0
+    gap = 30 if total_title_h > 0 and total_body_h > 0 else 0
 
     total_content_h = total_title_h + gap + total_body_h
 
-    # 画面全体の中央（Y=540）を意識した基準位置設定
-    content_center_y = 520
-    start_y = content_center_y - (total_content_h / 2)
+    start_y = 540 - (total_content_h / 2)
 
-    # 背景カードのサイズと位置（上下左右均等余白）
-    card_top = max(280, int(start_y - 40))
-    card_bottom = min(820, int(start_y + total_content_h + 40))
-    draw_white_glow(img, (130, card_top, 950, card_bottom), mode="card")
-
-    curr_y = start_y + (title_lh / 2)
     d = ImageDraw.Draw(img)
+    curr_y = start_y + (title_lh / 2)
 
-    # タイトル描画（中央揃え）
     if title_lines:
         for line in title_lines:
             try:
                 w = f_title.getbbox(line)[2] - f_title.getbbox(line)[0]
             except AttributeError:
                 w = f_title.getsize(line)[0]
-            
-            font_s = getattr(f_title, 'size', 32)
-            draw_pink_underline(img, 540, curr_y + (font_s / 2) - 2, w, height=10)
+
+            draw_pink_underline(img, 540, curr_y + (title_size / 2) - 2, w, height=8)
             d.text((540, curr_y), line, fill=(30, 30, 30), font=f_title, anchor="mm")
             curr_y += title_lh
 
@@ -368,16 +318,14 @@ def draw_text_page(img, title, text):
     else:
         curr_y = start_y + (body_lh / 2)
 
-    # 本文描画（各行完全中央揃え anchor="mm"）
     for line in body_lines:
-        d.text((540, curr_y), line, fill=(40, 40, 40), font=f_detail, anchor="mm")
+        d.text((540, curr_y), line, fill=(50, 50, 50), font=f_body, anchor="mm")
         curr_y += body_lh
 
 def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項目2, second_type, 挿入画像, 詳細テキスト, ハッシュタグ):
-    f_org = get_font(36)
-    f_sub = get_font(32)
-    f_label = get_font(28)
-    f_val = get_font(36)
+    f_org = get_font(32)
+    f_label = get_font(26)
+    f_val = get_font(32)
 
     clean_org = 主催 or '（一社）島根県作業療法士会 事務局'
     display_subtitle = f"〜 {サブタイトル.strip(' 〜~')} 〜" if サブタイトル and サブタイトル.strip() else ""
@@ -389,13 +337,13 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
     if mode == "研修会情報":
         d1 = ImageDraw.Draw(img1)
-        d1.text((540, 270), clean_org, fill=(30, 30, 30), font=f_org, anchor="mm")
+        d1.text((540, 310), clean_org, fill=(40, 40, 40), font=f_org, anchor="mm")
 
-        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=840, initial_size=52, min_size=24, max_lines=3)
-        font_size = getattr(f_title, 'size', 36)
+        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=500, initial_size=40, min_size=22, max_lines=3)
+        font_size = getattr(f_title, 'size', 32)
         line_height = font_size * 1.4
         total_title_height = line_height * len(title_lines)
-        title_start_y = 360 + (line_height / 2)
+        title_start_y = 380 + (line_height / 2)
 
         for i, line in enumerate(title_lines):
             y = title_start_y + (i * line_height)
@@ -404,26 +352,26 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
         current_y = title_start_y + total_title_height + 15
 
         if display_subtitle:
-            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=840, initial_size=30, min_size=20, max_lines=2)
-            sub_line_height = getattr(f_sub_dynamic, 'size', 28) * 1.25
+            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=480, initial_size=26, min_size=18, max_lines=2)
+            sub_line_height = getattr(f_sub_dynamic, 'size', 24) * 1.25
             for line in sub_lines:
-                d1.text((540, current_y), line, fill=(50, 50, 50), font=f_sub_dynamic, anchor="mm")
+                d1.text((540, current_y), line, fill=(60, 60, 60), font=f_sub_dynamic, anchor="mm")
                 current_y += sub_line_height
             current_y += 15
         else:
-            current_y += 20
+            current_y += 15
 
         date_label_y = max(current_y, 600)
         d1.text((540, date_label_y), "【日時】", fill=(80, 80, 80), font=f_label, anchor="mm")
-        date_val_y = date_label_y + 40
+        date_val_y = date_label_y + 35
         d1.text((540, date_val_y), 項目1 or "", fill=(30, 30, 30), font=f_val, anchor="mm")
 
         if 項目2 and 項目2.strip():
-            place_label_y = date_val_y + 60
+            place_label_y = date_val_y + 55
             d1.text((540, place_label_y), "【場所】", fill=(80, 80, 80), font=f_label, anchor="mm")
-            place_val_y = place_label_y + 40
+            place_val_y = place_label_y + 35
             d1.text((540, place_val_y), 項目2 or "", fill=(30, 30, 30), font=f_val, anchor="mm")
-            
+
         generated_images.append(img1)
 
         img2 = get_bg(mode)
@@ -431,61 +379,58 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
         generated_images.append(img2)
 
     else:
-        # お知らせ用 1枚目
-        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=800, initial_size=52, min_size=26, max_lines=3)
-        font_size = getattr(f_title, 'size', 36)
+        # お知らせ 1枚目
+        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=500, initial_size=40, min_size=22, max_lines=3)
+        font_size = getattr(f_title, 'size', 32)
         line_height = font_size * 1.45
-        total_height = line_height * len(title_lines)
-        
-        sub_lines, f_sub_dynamic = ([], get_font(32))
+        total_height = line_height * len(title_lines) + 50
+
+        sub_lines, f_sub_dynamic = ([], get_font(26))
         if display_subtitle:
-            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=800, initial_size=30, min_size=20, max_lines=2)
-            total_height += (getattr(f_sub_dynamic, 'size', 28) * 1.3 * len(sub_lines)) + 20
+            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=480, initial_size=26, min_size=18, max_lines=2)
+            total_height += (getattr(f_sub_dynamic, 'size', 24) * 1.3 * len(sub_lines)) + 15
 
         start_y = 540 - (total_height / 2)
 
-        bbox = (120, int(240), 960, int(start_y + total_height + 20))
-        draw_white_glow(img1, bbox, mode="glow")
-
         d1 = ImageDraw.Draw(img1)
-        d1.text((540, 270), clean_org, fill=(30, 30, 30), font=f_org, anchor="mm")
+        d1.text((540, start_y), clean_org, fill=(50, 50, 50), font=f_org, anchor="mm")
 
-        curr_y = start_y + (line_height / 2)
+        curr_y = start_y + 50 + (line_height / 2)
         for line in title_lines:
             d1.text((540, curr_y), line, fill=(20, 20, 20), font=f_title, anchor="mm")
             curr_y += line_height
 
         if sub_lines:
-            curr_y += 15
-            sub_lh = getattr(f_sub_dynamic, 'size', 28) * 1.3
+            curr_y += 10
+            sub_lh = getattr(f_sub_dynamic, 'size', 24) * 1.3
             for line in sub_lines:
-                d1.text((540, curr_y), line, fill=(50, 50, 50), font=f_sub_dynamic, anchor="mm")
+                d1.text((540, curr_y), line, fill=(70, 70, 70), font=f_sub_dynamic, anchor="mm")
                 curr_y += sub_lh
-        
+
         generated_images.append(img1)
 
         if second_type == "📷 画像のみ":
             img2 = get_bg(mode)
             draw_image_page(img2, 挿入画像)
             generated_images.append(img2)
-            
+
         elif second_type == "📝 テキストのみ":
             img2 = get_bg(mode)
             draw_text_page(img2, タイトル, 詳細テキスト)
             generated_images.append(img2)
-            
+
         elif second_type == "🖼️ 画像＋テキスト（3枚）":
             img2 = get_bg(mode)
             draw_image_page(img2, 挿入画像)
             generated_images.append(img2)
-            
+
             img3 = get_bg(mode)
             draw_text_page(img3, タイトル, 詳細テキスト)
             generated_images.append(img3)
 
     sub_text = f"\n{サブタイトル}\n" if サブタイトル and サブタイトル.strip() else ""
     tags_text = f"\n\n{ハッシュタグ}" if ハッシュタグ and ハッシュタグ.strip() else ""
-    
+
     if mode == "研修会情報":
         caption_text = f"""【{タイトル or 'お知らせ'}】のご案内✨
 {sub_text}
@@ -495,23 +440,17 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
 みなさまのご参加をお待ちしております！{tags_text}"""
     else:
-        if second_type == "📷 画像のみ":
-            content_str = "添付画像をご確認ください。"
-        elif second_type == "📝 テキストのみ":
-            content_str = summarize_text_jp(詳細テキスト, max_chars=120) if 詳細テキスト else "詳細内容は画像をご確認ください。"
-        else:
-            content_str = "詳細内容は添付画像（2〜3枚目）をご確認ください。"
-            
+        summary_str = summarize_text_jp(詳細テキスト, max_chars=90) if 詳細テキスト else "詳細内容は画像をご確認ください。"
         caption_text = f"""【{タイトル or 'お知らせ'}】
 {sub_text}
 📌 発信：{clean_org}
-📢 内容：{content_str}
+📢 内容：{summary_str}
 
 よろしくお願いいたします。{tags_text}"""
 
     return generated_images, caption_text
 
-# --- UI構築 ---
+# --- UI ---
 st.title("📱 インスタ投稿作成アプリ")
 
 st.markdown("### 📌 投稿の種類を選択してください")
@@ -560,7 +499,7 @@ with col1:
                         st.success("情報をフォームに反映しました！")
                         st.rerun()
                     else:
-                        st.error(f"ページの読み込みに失敗しました。")
+                        st.error("ページの読み込みに失敗しました。")
 
     st.subheader("📄 1. テキスト入力")
 
@@ -574,7 +513,6 @@ with col1:
 
             st.subheader("📷 2. 2枚目の画像設定")
             挿入画像 = st.file_uploader("2枚目に挿入する画像（任意）", type=["png", "jpg", "jpeg"])
-            
             second_type = "📷 画像のみ"
             詳細テキスト = ""
 
@@ -586,7 +524,6 @@ with col1:
 
             st.subheader("🖼️ 2. 2枚目以降のコンテンツ選択")
             selected_type = st.radio("構成パターン", ["📷 画像のみ", "📝 テキストのみ", "🖼️ 画像＋テキスト（3枚）"], horizontal=True)
-            
             second_type = selected_type
 
             if second_type == "📷 画像のみ":
@@ -595,7 +532,7 @@ with col1:
             elif second_type == "📝 テキストのみ":
                 挿入画像 = None
                 詳細テキスト = st.text_area("2枚目に表示する詳細テキスト（概要）", value=st.session_state["auto_summary"], placeholder="お知らせの概要テキストを入力してください。", height=150)
-            else: # 🖼️ 画像＋テキスト（3枚）
+            else:
                 挿入画像 = st.file_uploader("2枚目に挿入する画像", type=["png", "jpg", "jpeg"])
                 詳細テキスト = st.text_area("3枚目に表示する詳細テキスト（概要）", value=st.session_state["auto_summary"], placeholder="お知らせの概要テキストを入力してください。", height=150)
 
@@ -607,14 +544,12 @@ with col1:
 with col2:
     if submit:
         clean_org = 主催 or ''
-
         images, caption = generate_posts(
             mode, clean_org, タイトル, サブタイトル, 項目1, 項目2, 
             second_type, 挿入画像, 詳細テキスト, ハッシュタグ
         )
 
         st.subheader("🖼️ 完成画像")
-        
         cols = st.columns(len(images))
         for i, img in enumerate(images):
             with cols[i]:

@@ -1,7 +1,6 @@
 import os
 import io
 import re
-import textwrap
 import requests
 from bs4 import BeautifulSoup
 import streamlit as st
@@ -145,24 +144,6 @@ def fetch_page_info(url):
             "title": "", "subtitle": "", "date": "", "place": "", "org": "", "summary": "", "error": str(e)
         }
 
-def draw_white_glow(img, bbox, mode="card"):
-    x1, y1, x2, y2 = bbox
-    mask = Image.new('L', (1080, 1080), 0)
-    draw_mask = ImageDraw.Draw(mask)
-    
-    if mode == "card":
-        rect_box = (x1, y1, x2, y2)
-        draw_mask.rounded_rectangle(rect_box, radius=25, fill=240)
-        blurred_mask = mask.filter(ImageFilter.GaussianBlur(12))
-    else:
-        padding = 70
-        rect_box = (max(0, x1 - padding), max(0, y1 - padding), min(1080, x2 + padding), min(1080, y2 + padding))
-        draw_mask.rounded_rectangle(rect_box, radius=40, fill=210)
-        blurred_mask = mask.filter(ImageFilter.GaussianBlur(35))
-    
-    white_layer = Image.new('RGB', (1080, 1080), (255, 255, 255))
-    img.paste(white_layer, (0, 0), blurred_mask)
-
 def smart_wrap(text, font, max_width):
     if not text:
         return []
@@ -200,17 +181,21 @@ def wrap_and_get_font(text, max_width=860, initial_size=60, min_size=20, max_lin
 
     return lines[:max_lines], font
 
-def get_bg(mode):
+def get_bg(mode, blur=False):
     target_bg = BG_IMAGE_NOTICE if mode == "お知らせ" else BG_IMAGE_DEFAULT
     bg_p = os.path.join(BASE_DIR, target_bg)
     default_bg_p = os.path.join(BASE_DIR, BG_IMAGE_DEFAULT)
     
     if os.path.exists(bg_p):
-        return Image.open(bg_p).convert('RGB').resize((1080, 1080))
+        img = Image.open(bg_p).convert('RGB').resize((1080, 1080))
     elif os.path.exists(default_bg_p):
-        return Image.open(default_bg_p).convert('RGB').resize((1080, 1080))
+        img = Image.open(default_bg_p).convert('RGB').resize((1080, 1080))
     else:
-        return Image.new('RGB', (1080, 1080), color=(255, 255, 255))
+        img = Image.new('RGB', (1080, 1080), color=(255, 255, 255))
+        
+    if blur:
+        img = img.filter(ImageFilter.GaussianBlur(10)) # 背景をぼかす
+    return img
 
 def draw_pink_underline(img, center_x, y_bottom, text_width, height=14):
     overlay = Image.new('RGBA', img.size, (255, 255, 255, 0))
@@ -243,56 +228,19 @@ def draw_image_page(img, 挿入画像):
         except Exception:
             st.warning("画像の読み込みに失敗しました。")
 
-def draw_justified_line(draw, line, font, start_x, y, target_width, is_last_line=False):
-    """1行分のテキストの両端幅を計算して厳密に揃えて描画する関数"""
-    if not line:
-        return
-    
-    # 最終行、あるいは1文字のみの場合は幅を揃えず左揃えで描画
-    if is_last_line or len(line) <= 1:
-        draw.text((start_x, y), line, fill=(40, 40, 40), font=font)
-        return
-
-    # 全文字の本来の幅の合計を取得
-    char_widths = []
-    for char in line:
-        try:
-            bbox = font.getbbox(char)
-            w = bbox[2] - bbox[0]
-        except AttributeError:
-            w = font.getsize(char)[0]
-        char_widths.append(w)
-    
-    total_char_w = sum(char_widths)
-    
-    # 揃えるべき残りの余白幅
-    extra_space = target_width - total_char_w
-    
-    # 余白がマイナス、または広すぎる場合（不自然になる場合）は通常の左揃え
-    if extra_space <= 0 or extra_space > (target_width * 0.3):
-        draw.text((start_x, y), line, fill=(40, 40, 40), font=font)
-        return
-
-    gap = extra_space / (len(line) - 1)
-    
-    curr_x = start_x
-    for i, char in enumerate(line):
-        draw.text((curr_x, y), char, fill=(40, 40, 40), font=font)
-        curr_x += char_widths[i] + gap
-
 def draw_text_page(img, title, text):
-    """3枚目（詳細テキスト画面）の描画"""
-    target_text_w = 740  # テキストの両端幅を740pxに統一
-    card_w = 820         # 白背景カードの幅
+    """3枚目（詳細テキスト画面）の描画（タイトル位置修正・背景ぼかし・中央揃え）"""
+    target_text_w = 680  # 中央に綺麗に収まる幅設定
     
-    # --- 1. タイトル描画（上部配置＋ピンク下線） ---
-    title_start_y = 250
+    # --- 1. タイトル描画（位置を下げて枠内に収める） ---
+    title_start_y = 310  # 250から310に下げて枠内に移動
+    curr_t_y = title_start_y
+
     if title and title.strip():
-        title_lines, f_title = wrap_and_get_font(title, max_width=800, initial_size=42, min_size=24, max_lines=2)
+        title_lines, f_title = wrap_and_get_font(title, max_width=720, initial_size=38, min_size=24, max_lines=2)
         font_size = getattr(f_title, 'size', 32)
         line_height = font_size * 1.35
 
-        curr_t_y = title_start_y
         for line in title_lines:
             try:
                 w = f_title.getbbox(line)[2] - f_title.getbbox(line)[0]
@@ -305,64 +253,34 @@ def draw_text_page(img, title, text):
             d.text((540, curr_t_y), line, fill=(30, 30, 30), font=f_title, anchor="mm")
             curr_t_y += line_height
 
-    # --- 2. 本文描画（左右端ピッタリ揃え） ---
+    # --- 2. 本文描画（完全中央揃え） ---
     if text and text.strip():
         raw_paragraphs = text.split('\n')
         
-        font_size = 28
+        font_size = 26
         f_detail = get_font(font_size)
 
         paragraphs_wrapped = []
-        total_lines_count = 0
-
         for p in raw_paragraphs:
             if not p.strip():
                 paragraphs_wrapped.append([])
                 continue
             wrapped = smart_wrap(p, f_detail, target_text_w)
             paragraphs_wrapped.append(wrapped)
-            total_lines_count += len(wrapped)
 
-        if total_lines_count > 10:
-            font_size = 24
-            f_detail = get_font(font_size)
-            paragraphs_wrapped = []
-            total_lines_count = 0
-            for p in raw_paragraphs:
-                if not p.strip():
-                    paragraphs_wrapped.append([])
-                    continue
-                wrapped = smart_wrap(p, f_detail, target_text_w)
-                paragraphs_wrapped.append(wrapped)
-                total_lines_count += len(wrapped)
-
-        line_height = font_size * 1.55
-        total_text_height = (line_height * max(1, total_lines_count)) + (len(raw_paragraphs) * 6)
-
-        start_y = 410
-        start_x = 540 - (target_text_w / 2)
-
-        # 白カード描画
-        padding_y = 35
-        bbox = (
-            int(540 - (card_w // 2)), 
-            int(start_y), 
-            int(540 + (card_w // 2)), 
-            int(start_y + total_text_height + padding_y)
-        )
-        draw_white_glow(img, bbox, mode="card")
+        line_height = font_size * 1.6
+        curr_y = max(curr_t_y + 30, 440)
 
         d = ImageDraw.Draw(img)
-        curr_y = start_y + padding_y
 
         for lines in paragraphs_wrapped:
             if not lines:
                 curr_y += line_height * 0.4
                 continue
 
-            for idx, line in enumerate(lines):
-                is_last = (idx == len(lines) - 1)
-                draw_justified_line(d, line, f_detail, start_x, curr_y, target_text_w, is_last_line=is_last)
+            for line in lines:
+                # anchor="mm"（中央揃え）で描画
+                d.text((540, curr_y), line, fill=(40, 40, 40), font=f_detail, anchor="mm")
                 curr_y += line_height
             
             curr_y += 6
@@ -378,7 +296,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
     generated_images = []
 
-    # --- 1枚目生成（下線なし） ---
+    # --- 1枚目生成 ---
     img1 = get_bg(mode)
     d1 = ImageDraw.Draw(img1)
 
@@ -438,22 +356,18 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
         start_y = 540 - (total_height / 2)
 
-        bbox = (120, int(240), 960, int(start_y + total_height + 20))
-        draw_white_glow(img1, bbox)
-
-        d1_glow = ImageDraw.Draw(img1)
-        d1_glow.text((540, 270), clean_org, fill=(30, 30, 30), font=f_org, anchor="mm")
+        d1.text((540, 270), clean_org, fill=(30, 30, 30), font=f_org, anchor="mm")
 
         curr_y = start_y + (line_height / 2)
         for line in title_lines:
-            d1_glow.text((540, curr_y), line, fill=(20, 20, 20), font=f_title, anchor="mm")
+            d1.text((540, curr_y), line, fill=(20, 20, 20), font=f_title, anchor="mm")
             curr_y += line_height
 
         if sub_lines:
             curr_y += 15
             sub_lh = getattr(f_sub_dynamic, 'size', 28) * 1.3
             for line in sub_lines:
-                d1_glow.text((540, curr_y), line, fill=(50, 50, 50), font=f_sub_dynamic, anchor="mm")
+                d1.text((540, curr_y), line, fill=(50, 50, 50), font=f_sub_dynamic, anchor="mm")
                 curr_y += sub_lh
         
         generated_images.append(img1)
@@ -464,7 +378,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
             generated_images.append(img2)
             
         elif second_type == "📝 テキストのみ":
-            img2 = get_bg(mode)
+            img2 = get_bg(mode, blur=True)  # 背景をぼかす
             draw_text_page(img2, タイトル, 詳細テキスト)
             generated_images.append(img2)
             
@@ -473,7 +387,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
             draw_image_page(img2, 挿入画像)
             generated_images.append(img2)
             
-            img3 = get_bg(mode)
+            img3 = get_bg(mode, blur=True)  # 背景をぼかす
             draw_text_page(img3, タイトル, 詳細テキスト)
             generated_images.append(img3)
 

@@ -40,6 +40,7 @@ def get_font(size):
     return ImageFont.load_default()
 
 def fetch_page_info(url):
+    """記事本文からグループ・部会名を含めた詳細な主催情報を抽出し、タイトルとサブタイトルを自動分離する関数"""
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -51,10 +52,12 @@ def fetch_page_info(url):
         res.encoding = res.apparent_encoding
         soup = BeautifulSoup(res.text, 'html.parser')
 
+        # --- 1. メイン記事領域の取得 ---
         main_content = soup.find('article') or soup.find(class_=re.compile(r'entry-content|post-content|main|content'))
         if not main_content:
             main_content = soup
 
+        # --- 2. タイトルの抽出・サブタイトルの自動検出・括弧の除去 ---
         raw_title = ""
         title_tag = soup.find(['h1', 'h2'], class_=re.compile(r'entry-title|post-title|title')) or main_content.find(['h1', 'h2'])
         
@@ -69,29 +72,33 @@ def fetch_page_info(url):
             if other_h:
                 raw_title = other_h.get_text(strip=True)
 
-        cleaned_title = raw_title.strip(" \t\n")
+        cleaned_title = raw_title.strip(" ［］[]「」『』【】\t\n")
 
         title = cleaned_title
         extracted_subtitle = ""
 
+        # サブタイトルの自動分離ロジック
         bracket_match = re.search(r'^(.*?)\s*[［\[（\(](.*?)[］\]）\)]$', cleaned_title)
         if bracket_match:
-            title = bracket_match.group(1).strip(" ［］[]「」『』【】〜~-ー：:")
-            extracted_subtitle = bracket_match.group(2).strip(" ［］[]「」『』【】〜~-ー：:")
+            title = bracket_match.group(1).strip(" ［］[]「」『』【】")
+            extracted_subtitle = bracket_match.group(2).strip(" ［］[]「」『』【】")
         elif any(sep in cleaned_title for sep in [':', '：', '-', '〜', '~', '─']):
             parts = re.split(r'[:：\-〜~─]|\s+-\s+', cleaned_title, maxsplit=1)
-            title = parts[0].strip(" ［］[]「」『』【】〜~-ー：:")
+            title = parts[0].strip(" ［］[]「」『』【】〜~")
             if len(parts) > 1:
-                extracted_subtitle = parts[1].strip(" ［］[]「」『』【】〜~-ー：:")
+                extracted_subtitle = parts[1].strip(" ［］[]「」『』【】〜~")
 
+        # --- 3. 本文テキストの取得 ---
         text = main_content.get_text()
 
+        # --- 4. 日時・場所の抽出 ---
         date_match = re.search(r'(日時|開催日時|日 時)[:：\s]*([^\n]+)', text)
         place_match = re.search(r'(場所|開催場所|会場|場 所)[:：\s]*([^\n]+)', text)
 
         extracted_date = date_match.group(2).strip() if date_match else ""
         extracted_place = place_match.group(2).strip() if place_match else ""
 
+        # --- 5. 主催・グループ・部署の抽出 ---
         extracted_org = ""
 
         group_match = re.search(r'([^\s\n]+?(?:グループ|チーム|部|委員会|局))', text)
@@ -99,19 +106,22 @@ def fetch_page_info(url):
         ignore_words = ["庶務", "サイトマップ", "注意事項", "免責事項", "参加", "研修会"]
         
         if group_match:
-            candidate_group = group_match.group(1).strip(" \t\n［］[]【】")
+            candidate_group = group_match.group(1).strip()
+            # ★ グループ名から前後の括弧・記号を除去
+            candidate_group = candidate_group.strip(" ［］[]「」『』【】\t\n")
             if not any(word in candidate_group for word in ignore_words) and len(candidate_group) <= 20:
                 found_group = candidate_group
 
         org_match = re.search(r'(主催|主催者|担当|問合せ先|問い合わせ)[:：\s]*([^\n]+)', text)
         if org_match:
-            candidate_org = org_match.group(2).strip(" \t\n［］[]【】")
+            candidate_org = org_match.group(2).strip()
+            # ★ 主催者名から前後の括弧・記号を除去
+            candidate_org = candidate_org.strip(" ［］[]「」『』【】\t\n")
             if not any(word in candidate_org for word in ignore_words) and len(candidate_org) <= 30:
                 if candidate_org != raw_title and candidate_org != "研修会情報":
                     extracted_org = candidate_org
 
         if found_group:
-            found_group = re.sub(r'^[［\[\【]', '', found_group).strip()
             if "作業療法士会" not in found_group and "島根" not in found_group:
                 extracted_org = f"（一社）島根県作業療法士会 {found_group}"
             else:
@@ -121,7 +131,7 @@ def fetch_page_info(url):
         elif "作業療法士会" not in extracted_org and "島根" not in extracted_org:
             extracted_org = f"（一社）島根県作業療法士会 {extracted_org}"
 
-        extracted_org = re.sub(r'\s*［\s*', ' ', extracted_org)
+        # ★ 最終出力の前にも再度括弧を除去
         extracted_org = extracted_org.strip(" ［］[]「」『』【】")
 
         return {
@@ -155,8 +165,8 @@ def draw_white_glow(img, bbox, mode="normal"):
         draw_mask.rounded_rectangle(rect_box, radius=20, fill=235) # 少し濃いめ
         blurred_mask = mask.filter(ImageFilter.GaussianBlur(15))
     else:
-        # タイトル用（柔らかいモヤ）
-        padding = 60
+        # タイトル・主催用（柔らかいモヤ）
+        padding = 70 # ★ 主催まで届くように少し広げる
         rect_box = (max(0, x1 - padding), max(0, y1 - padding), min(1080, x2 + padding), min(1080, y2 + padding))
         draw_mask.rounded_rectangle(rect_box, radius=40, fill=210)
         blurred_mask = mask.filter(ImageFilter.GaussianBlur(35))
@@ -168,14 +178,17 @@ def smart_wrap(text, font, max_width):
     if not text:
         return []
 
+    # 1. BudouXで意味単位のチャンクを取得
     if parser:
         raw_chunks = parser.parse(text)
     else:
         raw_chunks = re.split(r'(?<=[、。・\s\─\〜~：:\-\_\/])', text)
 
+    # 2. 連続する漢字や連続する英数字（単語）を保護する処理
     chunks = []
     current_chunk = ""
     for chunk in raw_chunks:
+        # 漢字のみ、または英数字のみのチャンクは保護して繋げる
         if re.match(r'^[\u4e00-\u9faf]+$', chunk) or re.match(r'^[a-zA-Z0-9\-\_\.]+$', chunk):
             current_chunk += chunk
         else:
@@ -190,6 +203,7 @@ def smart_wrap(text, font, max_width):
     current_line = ""
 
     for chunk in chunks:
+        # 空白だけのチャンクをトリム
         if chunk.strip() == "" and chunk != " ": continue
             
         test_line = current_line + chunk
@@ -217,11 +231,13 @@ def smart_wrap(text, font, max_width):
         except AttributeError:
             w = font.getsize(line)[0]
 
+        # 漢字や連続単語がはみ出た場合、行全体を返して wrap_and_get_font で縮小を試みる
         if w > max_width:
+             # ★ 単語を壊さないように、文字数折り返しの余裕度を調整 (0.9 -> 0.95)
             sub_lines = textwrap.wrap(
                 line, 
-                width=max(1, int(len(line) * (max_width / w * 0.95))),
-                break_long_words=True,
+                width=max(1, int(len(line) * (max_width / w * 0.95))), 
+                break_long_words=True, # ここはTrueにしないとはみ出し続ける
                 break_on_hyphens=False
             )
             final_lines.extend(sub_lines)
@@ -231,13 +247,16 @@ def smart_wrap(text, font, max_width):
     return final_lines
 
 def wrap_and_get_font(text, max_width=860, initial_size=60, min_size=20, max_lines=3):
+    """長い単語や漢字がある場合、フォントサイズを縮小して1行に収めることを優先する関数"""
     if not text:
         return [""], get_font(min_size)
 
+    # まず最初の試行
     size = initial_size
     font = get_font(size)
     lines = smart_wrap(text, font, max_width)
     
+    # 全ての行が幅に収まっているか判定
     all_fit = True
     for line in lines:
         try:
@@ -249,12 +268,14 @@ def wrap_and_get_font(text, max_width=860, initial_size=60, min_size=20, max_lin
             all_fit = False
             break
 
+    # 収まっていない、または行数が多すぎる場合はフォントサイズを下げる
     if not all_fit or len(lines) > max_lines:
         while size >= min_size:
             size -= 2
             font = get_font(size)
             lines = smart_wrap(text, font, max_width)
 
+            # 再判定
             all_fit_retry = True
             for line in lines:
                 try:
@@ -269,8 +290,10 @@ def wrap_and_get_font(text, max_width=860, initial_size=60, min_size=20, max_lin
             if all_fit_retry and len(lines) <= max_lines:
                 return lines, font
     else:
+        # 最初のフォントサイズで収まっていた場合
         return lines, font
 
+    # 最小サイズでも収まらなかった場合は、最小サイズで返す（smart_wrapで強制改行されている）
     return lines[:max_lines], font
 
 def get_bg(mode):
@@ -295,7 +318,8 @@ def draw_image_page(img, 挿入画像):
                 if insert_img.mode != 'RGBA':
                     insert_img = insert_img.convert('RGBA')
 
-                max_w, max_h = 850, 850
+                # ★ 画像サイズを2枚構成の時と同じサイズにする (850 -> 800)
+                max_w, max_h = 800, 800
                 resample_filter = getattr(Image, 'Resampling', Image).LANCZOS
                 insert_img.thumbnail((max_w, max_h), resample_filter)
 
@@ -333,10 +357,14 @@ def draw_text_page(img, text):
             d.text((540, curr_y), line, fill=(30, 30, 30), font=f_detail, anchor="mm")
             curr_y += line_height
 
-def generate_posts(mode, clean_org, タイトル, サブタイトル, 項目1, 項目2, second_type, 挿入画像, 詳細テキスト, ハッシュタグ):
+def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項目2, second_type, 挿入画像, 詳細テキスト, ハッシュタグ):
     f_org = get_font(36)
+    f_sub = get_font(32)
     f_label = get_font(28)
     f_val = get_font(36)
+
+    # ★ 主催名の「［」などの記号をきれいにする。末尾の括弧は消去しない。
+    clean_org = re.sub(r'\s*［\s*', ' ', 主催 or '').strip(" \t\n")
 
     display_subtitle = f"〜 {サブタイトル.strip(' 〜~')} 〜" if サブタイトル and サブタイトル.strip() else ""
 
@@ -384,13 +412,12 @@ def generate_posts(mode, clean_org, タイトル, サブタイトル, 項目1, �
             
         generated_images.append(img1)
 
-        # 研修会の2枚目（画像）
         img2 = get_bg(mode)
         draw_image_page(img2, 挿入画像)
         generated_images.append(img2)
 
     else:
-        # お知らせ用1枚目
+        # お知らせ用：モヤとフォント調整
         title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=820, initial_size=60, min_size=28, max_lines=4)
         line_height = getattr(f_title, 'size', 36) * 1.35
         total_height = line_height * len(title_lines)
@@ -402,9 +429,11 @@ def generate_posts(mode, clean_org, タイトル, サブタイトル, 項目1, �
 
         start_y = 540 - (total_height / 2)
 
-        bbox = (120, int(start_y - 20), 960, int(start_y + total_height + 20))
+        # 白いモヤを描画 (範囲を主催まで拡大)
+        bbox = (120, int(240), 960, int(start_y + total_height + 20))
         draw_white_glow(img1, bbox)
 
+        # モヤの上に文字を描画するためにDrawオブジェクトを再生成
         d1_glow = ImageDraw.Draw(img1)
         d1_glow.text((540, 270), clean_org, fill=(30, 30, 30), font=f_org, anchor="mm")
 
@@ -423,19 +452,20 @@ def generate_posts(mode, clean_org, タイトル, サブタイトル, 項目1, �
         generated_images.append(img1)
 
         # --- お知らせの2枚目・3枚目（パターン分岐） ---
-        if second_type == "画像のみ":
+        if second_type == "📷 画像のみ":
             img2 = get_bg(mode)
             draw_image_page(img2, 挿入画像)
             generated_images.append(img2)
             
-        elif second_type == "テキストのみ":
+        elif second_type == "📝 テキストのみ":
             img2 = get_bg(mode)
             draw_text_page(img2, 詳細テキスト)
             generated_images.append(img2)
             
-        elif second_type == "画像＋テキスト（3枚）":
+        elif second_type == "🖼️ 画像＋テキスト（3枚）":
             # 2枚目：画像
             img2 = get_bg(mode)
+            # ★ ここで2枚目の画像を描画する処理が漏れていたため追加
             draw_image_page(img2, 挿入画像)
             generated_images.append(img2)
             # 3枚目：テキスト
@@ -457,12 +487,11 @@ def generate_posts(mode, clean_org, タイトル, サブタイトル, 項目1, �
 みなさまのご参加をお待ちしております！{tags_text}"""
     else:
         # パターンに合わせてキャプションを調整
-        if second_type == "画像のみ":
+        if second_type == "📷 画像のみ":
             content_str = "添付画像をご確認ください。"
-        elif second_type == "テキストのみ":
+        elif second_type == "📝 テキストのみ":
             content_str = 詳細テキスト if 詳細テキスト else "詳細内容は画像をご確認ください。"
         else: # 画像＋テキスト（3枚）
-            # 3枚目にテキストがあるので、キャプションは簡潔に
             content_str = "詳細内容は添付画像（2〜3枚目）をご確認ください。"
             
         caption_text = f"""【{タイトル or 'お知らせ'}】
@@ -536,7 +565,7 @@ with col1:
             挿入画像 = st.file_uploader("2枚目に挿入する画像（任意）", type=["png", "jpg", "jpeg"])
             
             # 研修会は詳細テキスト機能はなし（2枚構成固定）
-            second_type = "画像のみ"
+            second_type = "📷 画像のみ"
             詳細テキスト = ""
 
         else:
@@ -548,7 +577,6 @@ with col1:
             st.subheader("🖼️ 2. 2枚目以降のコンテンツ選択")
             selected_type = st.radio("構成パターン", ["📷 画像のみ", "📝 テキストのみ", "🖼️ 画像＋テキスト（3枚）"], horizontal=True)
             
-            # second_typeをパターンの文字列そのものにする
             second_type = selected_type
 
             if second_type == "📷 画像のみ":
@@ -557,7 +585,7 @@ with col1:
             elif second_type == "📝 テキストのみ":
                 挿入画像 = None
                 詳細テキスト = st.text_area("2枚目に表示する詳細テキスト", value=st.session_state["auto_title"], placeholder="お知らせの詳しい内容を入力してください。")
-            else: # 画像＋テキスト（3枚）
+            else: # 🖼️ 画像＋テキスト（3枚）
                 挿入画像 = st.file_uploader("2枚目に挿入する画像", type=["png", "jpg", "jpeg"])
                 詳細テキスト = st.text_area("3枚目に表示する詳細テキスト", value=st.session_state["auto_title"], placeholder="お知らせの詳しい内容を入力してください。")
 
@@ -568,7 +596,8 @@ with col1:
 
 with col2:
     if submit:
-        clean_org = re.sub(r'\s*［\s*', ' ', 主催 or '').strip(" ［］[]")
+        # 主催名の「［」などの記号をきれいにする
+        clean_org = re.sub(r'\s*［\s*', ' ', 主催 or '').strip(" \t\n")
 
         images, caption = generate_posts(
             mode, clean_org, タイトル, サブタイトル, 項目1, 項目2, 

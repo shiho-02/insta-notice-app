@@ -39,7 +39,6 @@ def get_font(size):
     return ImageFont.load_default()
 
 def clean_scraped_text(text):
-    """不要なメタデータ・ノイズ文字列を完全除去"""
     if not text:
         return ""
     text = re.sub(r'https?://[^\s\u3000]+', '', text)
@@ -64,7 +63,6 @@ def clean_scraped_text(text):
     return " ".join(cleaned_lines)
 
 def summarize_text_jp(text, target_chars=150):
-    """150文字程度を確実に維持する要約処理"""
     clean_text = clean_scraped_text(text)
     if not clean_text:
         return ""
@@ -77,16 +75,13 @@ def summarize_text_jp(text, target_chars=150):
 
     cutoff = clean_text[:target_chars]
     last_period = max(cutoff.rfind('。'), cutoff.rfind('！'), cutoff.rfind('？'))
-    
     if last_period > 100:
         res = cutoff[:last_period + 1]
     else:
         res = cutoff + "..."
-
     return res
 
 def smart_wrap(text, font, max_width):
-    """自然な折り返し処理"""
     if not text:
         return []
 
@@ -130,7 +125,7 @@ def smart_wrap(text, font, max_width):
     return lines
 
 def wrap_and_get_font(text, max_width=320, initial_size=22, min_size=13, max_lines=10):
-    """150文字前後が幅320px（丸枠内）に納まるようにフォントサイズ調整"""
+    """幅320px（中央の丸枠内に収まるサイズ）で折り返し"""
     if not text:
         return [""], get_font(min_size)
 
@@ -147,7 +142,6 @@ def wrap_and_get_font(text, max_width=320, initial_size=22, min_size=13, max_lin
     return lines[:max_lines], font
 
 def fetch_page_info(url):
-    """Webページ情報自動読み込み"""
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -223,23 +217,6 @@ def fetch_page_info(url):
             "title": "", "subtitle": "", "date": "", "place": "", "org": "", "summary": "", "error": str(e)
         }
 
-def draw_text_area_soft_blur(img, center_y, height_span, max_width=380, alpha=210, blur_radius=25):
-    """文字が存在する領域の背景に、ふんわり溶け込む「白いモヤ（ソフト背景）」を描画"""
-    overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-    
-    x1 = 540 - (max_width / 2)
-    x2 = 540 + (max_width / 2)
-    y1 = center_y - (height_span / 2) - 30
-    y2 = center_y + (height_span / 2) + 30
-
-    # 白い丸みのある背景を描く
-    draw.rounded_rectangle([x1, y1, x2, y2], radius=40, fill=(255, 255, 255, alpha))
-    
-    # ガウスぼかしを大きめにかけることで四角くならず「ふんわりした白いモヤ」にする
-    blurred_overlay = overlay.filter(ImageFilter.GaussianBlur(radius=blur_radius))
-    img.alpha_composite(blurred_overlay)
-
 def get_bg(mode):
     target_bg = BG_IMAGE_NOTICE if mode == "お知らせ" else BG_IMAGE_DEFAULT
     bg_p = os.path.join(BASE_DIR, target_bg)
@@ -251,6 +228,27 @@ def get_bg(mode):
         return Image.open(default_bg_p).convert('RGBA').resize((1080, 1080))
     else:
         return Image.new('RGBA', (1080, 1080), color=(255, 255, 255, 255))
+
+def draw_soft_rounded_text_base(img, bbox, alpha=230, blur_radius=20, padding=(30, 25)):
+    """【意図通りに修正】花の背景と文字の間に、角丸でふんわりとした半透明の白いモヤ（座布団）を敷く"""
+    overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    
+    x1, y1, x2, y2 = bbox
+    # テキスト領域に余白を持たせる
+    x1 -= padding[0]
+    y1 -= padding[1]
+    x2 += padding[0]
+    y2 += padding[1]
+    
+    # 真っ白で半透明（alpha）な角丸長方形を描く
+    draw.rounded_rectangle([x1, y1, x2, y2], radius=35, fill=(255, 255, 255, alpha))
+    
+    # 全体にガウスぼかし（GaussianBlur）をかけることで、「四角く角が丸い、ぼやっとしたもの」を表現
+    blurred_overlay = overlay.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    
+    # 背景の上にアルファ合成
+    img.alpha_composite(blurred_overlay)
 
 def draw_pink_underline(img, center_x, y_bottom, text_width, height=10):
     """タイトル用のピンクマーカー線"""
@@ -266,7 +264,10 @@ def draw_pink_underline(img, center_x, y_bottom, text_width, height=10):
     img.alpha_composite(blurred_overlay)
 
 def draw_image_page(img, 挿入画像):
-    """画像ページ"""
+    """画像ページ（背景に丸い白モヤを敷く）"""
+    image_x1, image_y1, image_x2, image_y2 = 280, 280, 800, 800
+    draw_soft_rounded_text_base(img, [image_x1, image_y1, image_x2, image_y2], padding=(0, 0))
+    
     if 挿入画像 is not None:
         try:
             image_bytes = 挿入画像.getvalue()
@@ -286,7 +287,7 @@ def draw_image_page(img, 挿入画像):
             st.warning("画像の読み込みに失敗しました。")
 
 def draw_text_page(img, title, text):
-    """テキスト詳細ページ：150文字程度を丸枠内（幅320px）に配置し、背景に白いモヤを置く"""
+    """テキスト詳細ページ：花の背景と文字の間に「四角で角が丸いぼやっとしたもの」を完璧に再現"""
     MAX_TEXT_WIDTH = 320
 
     title_lines, f_title = ([], get_font(24))
@@ -294,14 +295,14 @@ def draw_text_page(img, title, text):
         clean_t = clean_scraped_text(title)
         title_lines, f_title = wrap_and_get_font(clean_t, max_width=MAX_TEXT_WIDTH, initial_size=24, min_size=18, max_lines=2)
 
-    display_text = text if len(text) >= 120 else summarize_text_jp(text, target_chars=150)
+    display_text = text if len(text) <= 150 else summarize_text_jp(text, target_chars=150)
     body_lines, f_body = wrap_and_get_font(display_text, max_width=MAX_TEXT_WIDTH, initial_size=20, min_size=13, max_lines=10)
 
     title_size = getattr(f_title, 'size', 24)
     body_size = getattr(f_body, 'size', 18)
 
     title_lh = title_size * 1.4
-    body_lh = body_size * 1.42
+    body_lh = body_size * 1.45
 
     total_title_h = len(title_lines) * title_lh
     total_body_h = len(body_lines) * body_lh
@@ -310,9 +311,14 @@ def draw_text_page(img, title, text):
     total_content_h = total_title_h + gap + total_body_h
     start_y = 540 - (total_content_h / 2)
 
-    # 文字がある位置に合わせて背景に「ふんわりした白いモヤ」を描画
-    center_y = start_y + (total_content_h / 2)
-    draw_text_area_soft_blur(img, center_y, total_content_h, max_width=360, alpha=210, blur_radius=25)
+    # テキストが存在する全体の領域（bbox）を計算
+    text_bbox_x1 = 540 - (MAX_TEXT_WIDTH / 2)
+    text_bbox_y1 = start_y
+    text_bbox_x2 = 540 + (MAX_TEXT_WIDTH / 2)
+    text_bbox_y2 = start_y + total_content_h
+
+    # 【重要】文字を描画する前に、その背後にふんわりした白いモヤ（座布団）を敷く
+    draw_soft_rounded_text_base(img, [text_bbox_x1, text_bbox_y1, text_bbox_x2, text_bbox_y2], alpha=235, blur_radius=20, padding=(30, 25))
 
     d = ImageDraw.Draw(img)
     curr_y = start_y + (title_lh / 2)
@@ -352,7 +358,9 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
     img1 = get_bg(mode)
 
     if mode == "研修会情報":
-        draw_text_area_soft_blur(img1, 540, 450, max_width=360, alpha=210, blur_radius=25)
+        # 1枚目の文字エリアに合わせて背景にぼかしを敷く
+        box_x1, box_y1, box_x2, box_y2 = 180, 280, 900, 780
+        draw_soft_rounded_text_base(img1, [box_x1, box_y1, box_x2, box_y2])
 
         d1 = ImageDraw.Draw(img1)
         d1.text((540, 320), clean_org, fill=(50, 50, 50), font=f_org, anchor="mm")
@@ -410,7 +418,8 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
         start_y = 540 - (total_height / 2)
 
-        draw_text_area_soft_blur(img1, 540, total_height, max_width=360, alpha=210, blur_radius=25)
+        # 1枚目のお知らせ文字に合わせて背景にぼかしを敷く
+        draw_soft_rounded_text_base(img1, [230, start_y, 850, start_y + total_height])
 
         d1 = ImageDraw.Draw(img1)
         d1.text((540, start_y), clean_org, fill=(50, 50, 50), font=f_org, anchor="mm")

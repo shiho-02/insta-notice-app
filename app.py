@@ -63,8 +63,8 @@ def clean_scraped_text(text):
         cleaned_lines.append(l)
     return " ".join(cleaned_lines)
 
-def summarize_text_jp(text, max_chars=150):
-    """150文字前後の十分な文量を抽出"""
+def summarize_text_jp(text, target_chars=150):
+    """150文字程度を確実に維持する要約処理"""
     clean_text = clean_scraped_text(text)
     if not clean_text:
         return ""
@@ -72,28 +72,17 @@ def summarize_text_jp(text, max_chars=150):
     clean_text = re.sub(r'^[・\-*•\d+\.]+\s*', '', clean_text, flags=re.MULTILINE)
     clean_text = re.sub(r'\s+', ' ', clean_text).strip()
 
-    sentences = re.split(r'(?<=[。！？!\?])', clean_text)
-    sentences = [s.strip() for s in sentences if len(s.strip()) > 3]
+    if len(clean_text) <= target_chars:
+        return clean_text
 
-    if not sentences:
-        return clean_text[:max_chars]
+    cutoff = clean_text[:target_chars]
+    last_period = max(cutoff.rfind('。'), cutoff.rfind('！'), cutoff.rfind('？'))
+    
+    if last_period > 100:
+        res = cutoff[:last_period + 1]
+    else:
+        res = cutoff + "..."
 
-    selected = []
-    curr_len = 0
-    for s in sentences:
-        if curr_len + len(s) <= max_chars:
-            selected.append(s)
-            curr_len += len(s)
-        else:
-            if not selected:
-                selected.append(s[:max_chars - 3] + "...")
-            break
-
-    res = "".join(selected).strip()
-    if not res:
-        res = clean_text[:max_chars]
-    if res and not res.endswith(('。', '！', '？', '...')):
-        res += "。"
     return res
 
 def smart_wrap(text, font, max_width):
@@ -140,8 +129,8 @@ def smart_wrap(text, font, max_width):
 
     return lines
 
-def wrap_and_get_font(text, max_width=320, initial_size=24, min_size=15, max_lines=8):
-    """幅320px（丸枠内にしっかり収まるサイズ）で折り返し"""
+def wrap_and_get_font(text, max_width=320, initial_size=22, min_size=13, max_lines=10):
+    """150文字前後が幅320px（丸枠内）に納まるようにフォントサイズ調整"""
     if not text:
         return [""], get_font(min_size)
 
@@ -218,7 +207,7 @@ def fetch_page_info(url):
                 else:
                     extracted_org = comm_name
 
-        extracted_summary = summarize_text_jp(main_content.get_text(), max_chars=150)
+        extracted_summary = summarize_text_jp(main_content.get_text(), target_chars=150)
 
         return {
             "title": title,
@@ -234,18 +223,20 @@ def fetch_page_info(url):
             "title": "", "subtitle": "", "date": "", "place": "", "org": "", "summary": "", "error": str(e)
         }
 
-def draw_circle_white_blur(img, radius=280, blur_radius=30, alpha=230):
-    """丸枠の内側に広がる「自然な円形白ぼかし（モヤ）」を描画"""
+def draw_text_area_soft_blur(img, center_y, height_span, max_width=380, alpha=210, blur_radius=25):
+    """文字が存在する領域の背景に、ふんわり溶け込む「白いモヤ（ソフト背景）」を描画"""
     overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-    cx, cy = 540, 540
     
-    # 中央に白い円を描画
-    draw.ellipse(
-        [cx - radius, cy - radius, cx + radius, cy + radius],
-        fill=(255, 255, 255, alpha)
-    )
-    # ガウスぼかしで周りを優しくぼかす
+    x1 = 540 - (max_width / 2)
+    x2 = 540 + (max_width / 2)
+    y1 = center_y - (height_span / 2) - 30
+    y2 = center_y + (height_span / 2) + 30
+
+    # 白い丸みのある背景を描く
+    draw.rounded_rectangle([x1, y1, x2, y2], radius=40, fill=(255, 255, 255, alpha))
+    
+    # ガウスぼかしを大きめにかけることで四角くならず「ふんわりした白いモヤ」にする
     blurred_overlay = overlay.filter(ImageFilter.GaussianBlur(radius=blur_radius))
     img.alpha_composite(blurred_overlay)
 
@@ -276,7 +267,6 @@ def draw_pink_underline(img, center_x, y_bottom, text_width, height=10):
 
 def draw_image_page(img, 挿入画像):
     """画像ページ"""
-    draw_circle_white_blur(img, radius=260, blur_radius=25, alpha=220)
     if 挿入画像 is not None:
         try:
             image_bytes = 挿入画像.getvalue()
@@ -296,9 +286,7 @@ def draw_image_page(img, 挿入画像):
             st.warning("画像の読み込みに失敗しました。")
 
 def draw_text_page(img, title, text):
-    """テキスト詳細ページ：幅320pxに固定して丸枠の中に綺麗に納める"""
-    draw_circle_white_blur(img, radius=270, blur_radius=25, alpha=230)
-
+    """テキスト詳細ページ：150文字程度を丸枠内（幅320px）に配置し、背景に白いモヤを置く"""
     MAX_TEXT_WIDTH = 320
 
     title_lines, f_title = ([], get_font(24))
@@ -306,21 +294,25 @@ def draw_text_page(img, title, text):
         clean_t = clean_scraped_text(title)
         title_lines, f_title = wrap_and_get_font(clean_t, max_width=MAX_TEXT_WIDTH, initial_size=24, min_size=18, max_lines=2)
 
-    display_text = text if len(text) <= 150 else summarize_text_jp(text, max_chars=150)
-    body_lines, f_body = wrap_and_get_font(display_text, max_width=MAX_TEXT_WIDTH, initial_size=20, min_size=15, max_lines=8)
+    display_text = text if len(text) >= 120 else summarize_text_jp(text, target_chars=150)
+    body_lines, f_body = wrap_and_get_font(display_text, max_width=MAX_TEXT_WIDTH, initial_size=20, min_size=13, max_lines=10)
 
     title_size = getattr(f_title, 'size', 24)
     body_size = getattr(f_body, 'size', 18)
 
     title_lh = title_size * 1.4
-    body_lh = body_size * 1.45
+    body_lh = body_size * 1.42
 
     total_title_h = len(title_lines) * title_lh
     total_body_h = len(body_lines) * body_lh
-    gap = 20 if total_title_h > 0 and total_body_h > 0 else 0
+    gap = 18 if total_title_h > 0 and total_body_h > 0 else 0
 
     total_content_h = total_title_h + gap + total_body_h
     start_y = 540 - (total_content_h / 2)
+
+    # 文字がある位置に合わせて背景に「ふんわりした白いモヤ」を描画
+    center_y = start_y + (total_content_h / 2)
+    draw_text_area_soft_blur(img, center_y, total_content_h, max_width=360, alpha=210, blur_radius=25)
 
     d = ImageDraw.Draw(img)
     curr_y = start_y + (title_lh / 2)
@@ -341,7 +333,7 @@ def draw_text_page(img, title, text):
     else:
         curr_y = start_y + (body_lh / 2)
 
-    # 本文（約150文字）
+    # 本文（150文字程度）
     for line in body_lines:
         d.text((540, curr_y), line, fill=(40, 40, 40), font=f_body, anchor="mm")
         curr_y += body_lh
@@ -358,9 +350,10 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
     # 1枚目生成
     img1 = get_bg(mode)
-    draw_circle_white_blur(img1, radius=270, blur_radius=25, alpha=230)
 
     if mode == "研修会情報":
+        draw_text_area_soft_blur(img1, 540, 450, max_width=360, alpha=210, blur_radius=25)
+
         d1 = ImageDraw.Draw(img1)
         d1.text((540, 320), clean_org, fill=(50, 50, 50), font=f_org, anchor="mm")
 
@@ -417,6 +410,8 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
         start_y = 540 - (total_height / 2)
 
+        draw_text_area_soft_blur(img1, 540, total_height, max_width=360, alpha=210, blur_radius=25)
+
         d1 = ImageDraw.Draw(img1)
         d1.text((540, start_y), clean_org, fill=(50, 50, 50), font=f_org, anchor="mm")
 
@@ -465,7 +460,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
 みなさまのご参加をお待ちしております！{tags_text}"""
     else:
-        summary_str = summarize_text_jp(詳細テキスト, max_chars=150) if 詳細テキスト else "詳細内容は画像をご確認ください。"
+        summary_str = summarize_text_jp(詳細テキスト, target_chars=150) if 詳細テキスト else "詳細内容は画像をご確認ください。"
         caption_text = f"""【{タイトル or 'お知らせ'}】
 {sub_text}
 📌 発信：{clean_org}

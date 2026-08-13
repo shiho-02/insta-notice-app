@@ -166,7 +166,7 @@ def draw_white_glow(img, bbox, mode="normal"):
         blurred_mask = mask.filter(ImageFilter.GaussianBlur(15))
     else:
         # タイトル・主催用（柔らかいモヤ）
-        padding = 70 # ★ 主催まで届くように少し広げる
+        padding = 70
         rect_box = (max(0, x1 - padding), max(0, y1 - padding), min(1080, x2 + padding), min(1080, y2 + padding))
         draw_mask.rounded_rectangle(rect_box, radius=40, fill=210)
         blurred_mask = mask.filter(ImageFilter.GaussianBlur(35))
@@ -233,7 +233,7 @@ def smart_wrap(text, font, max_width):
 
         # 漢字や連続単語がはみ出た場合、行全体を返して wrap_and_get_font で縮小を試みる
         if w > max_width:
-             # ★ 単語を壊さないように、文字数折り返しの余裕度を調整 (0.9 -> 0.95)
+             # 単語を壊さないように、文字数折り返しの余裕度を調整 (0.9 -> 0.95)
             sub_lines = textwrap.wrap(
                 line, 
                 width=max(1, int(len(line) * (max_width / w * 0.95))), 
@@ -318,7 +318,7 @@ def draw_image_page(img, 挿入画像):
                 if insert_img.mode != 'RGBA':
                     insert_img = insert_img.convert('RGBA')
 
-                # ★ 画像サイズを2枚構成の時と同じサイズにする (850 -> 800)
+                # ★ すべての画像の thumbnail サイズを 800x800 に統一
                 max_w, max_h = 800, 800
                 resample_filter = getattr(Image, 'Resampling', Image).LANCZOS
                 insert_img.thumbnail((max_w, max_h), resample_filter)
@@ -412,12 +412,14 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
             
         generated_images.append(img1)
 
+        # 研修会の2枚目（画像）
         img2 = get_bg(mode)
+        # ★ ここも draw_image_page 内で 800x800 に統一される
         draw_image_page(img2, 挿入画像)
         generated_images.append(img2)
 
     else:
-        # お知らせ用：モヤとフォント調整
+        # お知らせ用1枚目
         title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=820, initial_size=60, min_size=28, max_lines=4)
         line_height = getattr(f_title, 'size', 36) * 1.35
         total_height = line_height * len(title_lines)
@@ -454,6 +456,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
         # --- お知らせの2枚目・3枚目（パターン分岐） ---
         if second_type == "📷 画像のみ":
             img2 = get_bg(mode)
+            # ★ ここも draw_image_page 内で 800x800 に統一される
             draw_image_page(img2, 挿入画像)
             generated_images.append(img2)
             
@@ -465,7 +468,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
         elif second_type == "🖼️ 画像＋テキスト（3枚）":
             # 2枚目：画像
             img2 = get_bg(mode)
-            # ★ ここで2枚目の画像を描画する処理が漏れていたため追加
+            # ★ ここも draw_image_page 内で 800x800 に統一される
             draw_image_page(img2, 挿入画像)
             generated_images.append(img2)
             # 3枚目：テキスト

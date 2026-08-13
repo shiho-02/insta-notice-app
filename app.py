@@ -61,8 +61,8 @@ def clean_scraped_text(text):
         cleaned_lines.append(l)
     return " ".join(cleaned_lines)
 
-def summarize_text_jp(text, target_chars=160):
-    """文が途中で不自然に切れず、綺麗に句読点で終わる要約処理"""
+def summarize_text_jp(text, target_chars=150):
+    """文脈を壊さず自然な句読点で締めくくる要約"""
     clean_text = clean_scraped_text(text)
     if not clean_text:
         return ""
@@ -73,10 +73,10 @@ def summarize_text_jp(text, target_chars=160):
     if len(clean_text) <= target_chars:
         return clean_text
 
-    cutoff = clean_text[:target_chars + 30]
+    cutoff = clean_text[:target_chars + 20]
     punct_pos = [m.start() for m in re.finditer(r'[。！？]', cutoff)]
     
-    valid_puncts = [p for p in punct_pos if p >= 100]
+    valid_puncts = [p for p in punct_pos if p >= 90]
     if valid_puncts:
         best_p = valid_puncts[-1]
         return clean_text[:best_p + 1]
@@ -88,15 +88,26 @@ def summarize_text_jp(text, target_chars=160):
     return clean_text[:target_chars] + "..."
 
 def smart_wrap(text, font, max_width):
+    """自然な日本語文節区切りで折り返す改行処理"""
     if not text:
         return []
 
+    # タイトルや文章の文節区切りを優先
     if parser:
-        chunks = parser.parse(text)
+        raw_chunks = parser.parse(text)
     else:
-        chunks = re.split(r'(?<=[\s、。！？\-\:\/])', text)
-        if len(chunks) == 1:
-            chunks = list(text)
+        raw_chunks = re.split(r'(?<=[\s、。！？\-\:\/「」『』【】（）\(\)])', text)
+
+    chunks = []
+    for c in raw_chunks:
+        if not c:
+            continue
+        # 長すぎるチャンク（単語）はさらに細分化
+        if len(c) > 10:
+            sub = re.findall(r'.{1,6}', c)
+            chunks.extend(sub)
+        else:
+            chunks.append(c)
 
     lines = []
     current_line = ""
@@ -115,8 +126,14 @@ def smart_wrap(text, font, max_width):
                 lines.append(current_line)
                 current_line = chunk
             else:
+                # 1文字ずつ収まるかチェックして厳密に収める
                 for char in chunk:
-                    if font.getbbox(current_line + char)[2] - font.getbbox(current_line + char)[0] <= max_width:
+                    try:
+                        cw = font.getbbox(current_line + char)[2] - font.getbbox(current_line + char)[0]
+                    except AttributeError:
+                        cw = font.getsize(current_line + char)[0]
+
+                    if cw <= max_width:
                         current_line += char
                     else:
                         lines.append(current_line)
@@ -127,7 +144,7 @@ def smart_wrap(text, font, max_width):
 
     return lines
 
-def wrap_and_get_font(text, max_width=750, font_size=40):
+def wrap_and_get_font(text, max_width=700, font_size=40):
     if not text:
         return [""], get_font(font_size)
 
@@ -210,7 +227,7 @@ def fetch_page_info(url):
         extracted_date = date_match.group(2).strip() if date_match else ""
         extracted_place = place_match.group(2).strip() if place_match else ""
 
-        extracted_summary = summarize_text_jp(main_content.get_text(), target_chars=160)
+        extracted_summary = summarize_text_jp(main_content.get_text(), target_chars=150)
 
         return {
             "title": title,
@@ -227,7 +244,7 @@ def fetch_page_info(url):
         }
 
 def draw_clean_white_blur_base(img, center_y, total_height, box_width=860, max_alpha=235, blur_radius=35, padding_y=50):
-    """文字を美しく際立たせる大きな純白ぼかしフィルター"""
+    """文字背景のぼかしベース"""
     width, height = img.size
     
     mask = Image.new('L', (width, height), 0)
@@ -293,24 +310,24 @@ def draw_image_page(img, 挿入画像):
             st.warning("画像の読み込みに失敗しました。")
 
 def draw_text_page(img, title, text):
-    """文章の長さに応じて自動的に最適サイズに縮小し、入りきらない問題を完全解決"""
-    MAX_TEXT_WIDTH = 760
-    MAX_BOX_HEIGHT = 680  # 画面に収まる最大高さ制限
+    """横切れ・はみ出しを確実に防ぐ安全枠（700px）設計"""
+    MAX_TEXT_WIDTH = 700  # 横切れ防止のため幅を700pxに安全制限
+    MAX_BOX_HEIGHT = 660
 
     clean_t = clean_scraped_text(title) if title else ""
-    title_lines, f_title = wrap_and_get_font(clean_t, max_width=MAX_TEXT_WIDTH, font_size=40)
+    title_lines, f_title = wrap_and_get_font(clean_t, max_width=MAX_TEXT_WIDTH, font_size=38)
 
-    display_text = text if len(text) <= 180 else summarize_text_jp(text, target_chars=180)
+    display_text = text if len(text) <= 160 else summarize_text_jp(text, target_chars=160)
 
-    # 動的なフォントサイズ調整（文字が絶対にはみ出さないよう調整）
-    current_body_size = 32
+    # フォントサイズ自動最適化（24pt〜30pt）
+    current_body_size = 30
     body_lines = []
     f_body = None
 
-    while current_body_size >= 24:
+    while current_body_size >= 22:
         body_lines, f_body = wrap_and_get_font(display_text, max_width=MAX_TEXT_WIDTH, font_size=current_body_size)
-        title_lh = 40 * 1.45
-        body_lh = current_body_size * 1.5
+        title_lh = 38 * 1.45
+        body_lh = current_body_size * 1.55
         total_title_h = len(title_lines) * title_lh
         total_body_h = len(body_lines) * body_lh
         gap = 35 if total_title_h > 0 and total_body_h > 0 else 0
@@ -319,11 +336,10 @@ def draw_text_page(img, title, text):
 
         if total_content_h <= MAX_BOX_HEIGHT:
             break
-        current_body_size -= 2  # 入りきらない場合はフォントサイズを小さく調整
+        current_body_size -= 2
 
     center_y = 540
 
-    # 白いぼかしシートを描画
     draw_clean_white_blur_base(img, center_y, total_content_h, box_width=860, max_alpha=235, blur_radius=35, padding_y=50)
 
     d = ImageDraw.Draw(img)
@@ -337,7 +353,7 @@ def draw_text_page(img, title, text):
             except AttributeError:
                 w = f_title.getsize(line)[0]
 
-            draw_pink_underline(img, 540, curr_y + 16, w, height=10)
+            draw_pink_underline(img, 540, curr_y + 15, w, height=10)
             d.text((540, curr_y), line, fill=(20, 20, 20), font=f_title, anchor="mm")
             curr_y += title_lh
 
@@ -363,13 +379,13 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
     img1 = get_bg(mode)
 
     if mode == "研修会情報":
-        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=750, font_size=46)
-        line_height = 46 * 1.45
+        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=700, font_size=44)
+        line_height = 44 * 1.45
         total_title_h = line_height * len(title_lines)
 
         sub_lines, f_sub = ([], get_font(30))
         if display_subtitle:
-            sub_lines, f_sub = wrap_and_get_font(display_subtitle, max_width=700, font_size=30)
+            sub_lines, f_sub = wrap_and_get_font(display_subtitle, max_width=680, font_size=30)
         total_sub_h = len(sub_lines) * (30 * 1.35)
 
         total_content_h = 70 + total_title_h + (25 if display_subtitle else 0) + total_sub_h + 220
@@ -414,13 +430,13 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
     else:
         # お知らせ 1枚目
-        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=750, font_size=46)
-        line_height = 46 * 1.45
+        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=700, font_size=44)
+        line_height = 44 * 1.45
         total_title_h = line_height * len(title_lines)
 
         sub_lines, f_sub = ([], get_font(30))
         if display_subtitle:
-            sub_lines, f_sub = wrap_and_get_font(display_subtitle, max_width=700, font_size=30)
+            sub_lines, f_sub = wrap_and_get_font(display_subtitle, max_width=680, font_size=30)
         total_sub_h = len(sub_lines) * (30 * 1.35)
 
         total_content_h = 70 + total_title_h + (20 if display_subtitle else 0) + total_sub_h
@@ -477,7 +493,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
 みなさまのご参加をお待ちしております！{tags_text}"""
     else:
-        summary_str = summarize_text_jp(詳細テキスト, target_chars=160) if 詳細テキスト else "詳細内容は画像をご確認ください。"
+        summary_str = summarize_text_jp(詳細テキスト, target_chars=150) if 詳細テキスト else "詳細内容は画像をご確認ください。"
         caption_text = f"""【{タイトル or 'お知らせ'}】
 {sub_text}
 📌 発信：{clean_org}

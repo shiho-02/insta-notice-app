@@ -7,6 +7,12 @@ from bs4 import BeautifulSoup
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
+try:
+    import budouX
+    parser = budouX.load_default_japanese_parser()
+except ImportError:
+    parser = None
+
 st.set_page_config(page_title="インスタ投稿作成アプリ", layout="wide")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -71,7 +77,6 @@ def fetch_page_info(url):
         title = cleaned_title
         extracted_subtitle = ""
 
-        # サブタイトルの自動分離ロジック（記号の除去を強化）
         bracket_match = re.search(r'^(.*?)\s*[［\[（\(](.*?)[］\]）\)]$', cleaned_title)
         if bracket_match:
             title = bracket_match.group(1).strip(" ［］[]「」『』【】〜~-ー：:")
@@ -80,7 +85,6 @@ def fetch_page_info(url):
             parts = re.split(r'[:：\-〜~─]|\s+-\s+', cleaned_title, maxsplit=1)
             title = parts[0].strip(" ［］[]「」『』【】〜~-ー：:")
             if len(parts) > 1:
-                # ★ サブタイトルの前後から「〜」や「-」等の余分な区切り記号をきれいに除去
                 extracted_subtitle = parts[1].strip(" ［］[]「」『』【】〜~-ー：:")
 
         # --- 3. 本文テキストの取得 ---
@@ -93,7 +97,7 @@ def fetch_page_info(url):
         extracted_date = date_match.group(2).strip() if date_match else ""
         extracted_place = place_match.group(2).strip() if place_match else ""
 
-        # --- 5. 主催・グループ・部署の抽出 ---
+        # --- 5. 主催・グループ・部署の抽出（［］の徹底除去） ---
         extracted_org = ""
 
         group_match = re.search(r'([^\s\n]+?(?:グループ|チーム|部|委員会|局))', text)
@@ -101,18 +105,19 @@ def fetch_page_info(url):
         ignore_words = ["庶務", "サイトマップ", "注意事項", "免責事項", "参加", "研修会"]
         
         if group_match:
-            candidate_group = group_match.group(1).strip(" \t\n")
+            candidate_group = group_match.group(1).strip(" \t\n［］[]【】")
             if not any(word in candidate_group for word in ignore_words) and len(candidate_group) <= 20:
                 found_group = candidate_group
 
         org_match = re.search(r'(主催|主催者|担当|問合せ先|問い合わせ)[:：\s]*([^\n]+)', text)
         if org_match:
-            candidate_org = org_match.group(2).strip(" \t\n")
+            candidate_org = org_match.group(2).strip(" \t\n［］[]【】")
             if not any(word in candidate_org for word in ignore_words) and len(candidate_org) <= 30:
                 if candidate_org != raw_title and candidate_org != "研修会情報":
                     extracted_org = candidate_org
 
         if found_group:
+            found_group = re.sub(r'^[［\[\【]', '', found_group).strip()
             if "作業療法士会" not in found_group and "島根" not in found_group:
                 extracted_org = f"（一社）島根県作業療法士会 {found_group}"
             else:
@@ -121,6 +126,10 @@ def fetch_page_info(url):
             extracted_org = "（一社）島根県作業療法士会"
         elif "作業療法士会" not in extracted_org and "島根" not in extracted_org:
             extracted_org = f"（一社）島根県作業療法士会 {extracted_org}"
+
+        # 最後に残った［］等の余分な記号を綺麗に整形
+        extracted_org = re.sub(r'\s*［\s*', ' ', extracted_org)
+        extracted_org = extracted_org.strip(" ［］[]「」『』【】")
 
         return {
             "title": title,
@@ -157,17 +166,21 @@ def draw_white_glow(img, bbox):
     img.paste(white_layer, (0, 0), blurred_mask)
 
 def smart_wrap(text, font, max_width):
-    """文脈・スペース・単語境界を考慮して変な場所で切れないよう折り返す関数"""
+    """BudouXを使って文脈・単語の区切り（福祉／用具など）を壊さずに自然に折り返す関数"""
     if not text:
         return []
 
-    # 助詞、句読点、スペース、ハイフン等で分割
-    tokens = re.split(r'(?<=[、。・\s\─\〜~：:\-\_\/])', text)
+    # BudouXが利用可能な場合は意味単位の分かち書きを使用
+    if parser:
+        chunks = parser.parse(text)
+    else:
+        chunks = re.split(r'(?<=[、。・\s\─\〜~：:\-\_\/])', text)
+
     lines = []
     current_line = ""
 
-    for token in tokens:
-        test_line = current_line + token
+    for chunk in chunks:
+        test_line = current_line + chunk
         try:
             bbox = font.getbbox(test_line)
             w = bbox[2] - bbox[0]
@@ -179,7 +192,7 @@ def smart_wrap(text, font, max_width):
         else:
             if current_line:
                 lines.append(current_line)
-            current_line = token
+            current_line = chunk
 
     if current_line:
         lines.append(current_line)
@@ -193,7 +206,6 @@ def smart_wrap(text, font, max_width):
             w = font.getsize(line)[0]
 
         if w > max_width:
-            # 英語単語や記号のない連続文字の場合は単語を壊さないように折り返し
             sub_lines = textwrap.wrap(
                 line, 
                 width=max(1, int(len(line) * (max_width / w))),
@@ -254,12 +266,17 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
     f_label = get_font(28)
     f_val = get_font(36)
 
+    # ★ サブタイトルが入力されている場合、先頭と末尾に「〜」を装飾として自動付与
+    display_subtitle = f"〜 {サブタイトル.strip(' 〜~')} 〜" if サブタイトル and サブタイトル.strip() else ""
+
     # --- 1枚目生成 ---
     img1 = get_bg(mode)
 
     if mode == "研修会情報":
         d1 = ImageDraw.Draw(img1)
-        d1.text((540, 270), 主催 or "", fill=(30, 30, 30), font=f_org, anchor="mm")
+        # 主催名の「［」などの記号をきれいにして表示
+        clean_org = re.sub(r'\s*［\s*', ' ', 主催 or '').strip(" ［］[]")
+        d1.text((540, 270), clean_org, fill=(30, 30, 30), font=f_org, anchor="mm")
 
         title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=860, initial_size=58, min_size=28, max_lines=3)
         font_size = getattr(f_title, 'size', 36)
@@ -274,8 +291,8 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
         current_y = title_start_y + total_title_height + 10
 
-        if サブタイトル and サブタイトル.strip():
-            sub_lines, f_sub_dynamic = wrap_and_get_font(サブタイトル, max_width=860, initial_size=32, min_size=24, max_lines=2)
+        if display_subtitle:
+            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=860, initial_size=32, min_size=24, max_lines=2)
             sub_line_height = getattr(f_sub_dynamic, 'size', 28) * 1.25
             for line in sub_lines:
                 d1.text((540, current_y), line, fill=(50, 50, 50), font=f_sub_dynamic, anchor="mm")
@@ -303,8 +320,8 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
         total_height = line_height * len(title_lines)
         
         sub_lines, f_sub_dynamic = ([], f_sub)
-        if サブタイトル and サブタイトル.strip():
-            sub_lines, f_sub_dynamic = wrap_and_get_font(サブタイトル, max_width=820, initial_size=32, min_size=24, max_lines=2)
+        if display_subtitle:
+            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=820, initial_size=32, min_size=24, max_lines=2)
             total_height += (getattr(f_sub_dynamic, 'size', 28) * 1.3 * len(sub_lines)) + 20
 
         start_y = 540 - (total_height / 2)
@@ -313,7 +330,8 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
         draw_white_glow(img1, bbox)
 
         d1 = ImageDraw.Draw(img1)
-        d1.text((540, 270), 主催 or "", fill=(30, 30, 30), font=f_org, anchor="mm")
+        clean_org = re.sub(r'\s*［\s*', ' ', 主催 or '').strip(" ［］[]")
+        d1.text((540, 270), clean_org, fill=(30, 30, 30), font=f_org, anchor="mm")
 
         curr_y = start_y + (line_height / 2)
         for line in title_lines:
@@ -375,11 +393,12 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
     # --- キャプション生成 ---
     sub_text = f"\n{サブタイトル}\n" if サブタイトル and サブタイトル.strip() else ""
     tags_text = f"\n\n{ハッシュタグ}" if ハッシュタグ and ハッシュタグ.strip() else ""
+    clean_org = re.sub(r'\s*［\s*', ' ', 主催 or '').strip(" ［］[]")
     
     if mode == "研修会情報":
         caption_text = f"""【{タイトル or 'お知らせ'}】のご案内✨
 {sub_text}
-📌 主催：{主催 or ''}
+📌 主催：{clean_org}
 📅 日時：{項目1 or ''}
 📍 場所：{項目2 or ''}
 
@@ -388,7 +407,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
         content_str = 詳細テキスト if second_type == "詳細テキスト" else "添付画像をご確認ください。"
         caption_text = f"""【{タイトル or 'お知らせ'}】
 {sub_text}
-📌 発信：{主催 or ''}
+📌 発信：{clean_org}
 📢 内容：{content_str}
 
 よろしくお願いいたします。{tags_text}"""

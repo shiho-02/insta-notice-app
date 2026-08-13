@@ -44,7 +44,7 @@ def clean_scraped_text(text):
         return ""
     text = re.sub(r'https?://[^\s\u3000]+', '', text)
     noise_patterns = [
-        r'会員の方へ', r'会員動向', r'Tweet', r'tweet', r'シェア', r'LINE', r me Facebook',
+        r'会員の方へ', r'会員動向', r'Tweet', r'tweet', r'シェア', r'LINE', r'Facebook',
         r'はてブ', r'ポケット', r'印刷', r'認知症の作業療法委員会', r'カテゴリー[:：]?', r'タグ[:：]?',
         r'ホーム', r'お知らせ', r'記事一覧', r'投稿日[:：]?', r'更新日[:：]?'
     ]
@@ -82,7 +82,6 @@ def summarize_text_jp(text, max_chars=150):
             selected.append(s)
             curr_len += len(s)
         else:
-            # 1つ目の文で溢れる場合は切り詰めて保持
             if not selected:
                 selected.append(s[:max_chars - 3] + "...")
             break
@@ -250,13 +249,8 @@ def draw_white_background_blur(img, center_x=540, center_y=540, radius=290, blur
     x2 = center_x + radius
     y2 = center_y + radius
     
-    # 透過度を持たせた不透明な白丸を描く
     draw.ellipse([x1, y1, x2, y2], fill=(255, 255, 255, 240))
-    
-    # 周囲にガウスぼかし（GaussianBlur）を適用して柔らかな白グラデーションにする
     blurred = overlay.filter(ImageFilter.GaussianBlur(radius=blur_radius))
-    
-    # 背景画像へアルファ合成
     img.paste(blurred, (0, 0), blurred)
 
 def draw_pink_underline(img, center_x, y_bottom, text_width, height=12):
@@ -293,21 +287,16 @@ def draw_image_page(img, 挿入画像):
 
 def draw_text_page(img, title, text):
     """テキスト詳細ページ（3枚目等）：背景白ぼかしの上に150文字前後の文章を配置"""
-    # 1. 背後の白ぼかしを必ず合成
     draw_white_background_blur(img, center_x=540, center_y=540, radius=290, blur_radius=18)
 
     max_circle_w = 460
 
-    # タイトル
     title_lines, f_title = ([], get_font(28))
     if title and title.strip():
         clean_t = clean_scraped_text(title)
         title_lines, f_title = wrap_and_get_font(clean_t, max_width=max_circle_w, initial_size=30, min_size=20, max_lines=2)
 
-    # 150文字前後の要約文
     clean_summary_text = summarize_text_jp(text, max_chars=150)
-    
-    # 150文字程度が綺麗に入るよう自動フォント調整
     body_lines, f_body = wrap_and_get_font(clean_summary_text, max_width=max_circle_w, initial_size=24, min_size=18, max_lines=6)
 
     title_size = getattr(f_title, 'size', 28)
@@ -404,7 +393,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
         generated_images.append(img2)
 
     else:
-        # お知らせ 1枚目（背景白ぼかしを描画）
+        # お知らせ 1枚目
         draw_white_background_blur(img1, center_x=540, center_y=540, radius=290, blur_radius=18)
 
         title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=480, initial_size=38, min_size=22, max_lines=3)

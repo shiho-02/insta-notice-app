@@ -38,6 +38,51 @@ def get_font(size):
                 continue
     return ImageFont.load_default()
 
+def summarize_text_jp(text, max_chars=130):
+    """箇条書きを使わず、自然な短文の連なりとして既定の文字数内にきれいに収める関数"""
+    if not text:
+        return ""
+    
+    # 箇条書き記号や不要な改行を排除し、文章として繋げる
+    clean_text = re.sub(r'^[・\-*•\d+\.]+\s*', '', text, flags=re.MULTILINE)
+    clean_text = re.sub(r'\s+', ' ', clean_text).strip()
+    
+    if len(clean_text) <= max_chars:
+        return clean_text
+
+    # 句点や感嘆符で文章ごとに分割
+    sentences = re.split(r'(?<=[。！？!\?])', clean_text)
+    selected_sentences = []
+    current_length = 0
+
+    for s in sentences:
+        s_strip = s.strip()
+        if not s_strip:
+            continue
+        if current_length + len(s_strip) <= max_chars:
+            selected_sentences.append(s_strip)
+            current_length += len(s_strip)
+        else:
+            # 収まらない場合は、読点（、）の区切りで自然なところまで入れる
+            remaining = max_chars - current_length
+            if remaining >= 12:
+                sub_parts = re.split(r'(?<=[、,])', s_strip)
+                for sub in sub_parts:
+                    if current_length + len(sub) <= max_chars:
+                        selected_sentences.append(sub)
+                        current_length += len(sub)
+                    else:
+                        break
+            break
+
+    result = "".join(selected_sentences).strip()
+    if not result:
+        result = clean_text[:max_chars - 3] + "..."
+    elif not result.endswith(('。', '！', '！', '？', '?')):
+        result += "。"
+
+    return result
+
 def fetch_page_info(url):
     """記事本文からタイトル・サブタイトル・日時・場所・発信元(主催)・概要文(テキスト)を抽出する関数"""
     try:
@@ -115,20 +160,15 @@ def fetch_page_info(url):
 
         paragraphs = [p.strip() for p in text.split('\n') if p.strip()]
         summary_lines = []
-        char_count = 0
         
         for p in paragraphs:
             if any(k in p for k in ["日時", "場所", "会場", "主催", "発信元", "お問合せ", "ログイン", "ホーム", "サイトマップ"]):
                 continue
             if len(p) > 10:
                 summary_lines.append(p)
-                char_count += len(p)
-                if char_count >= 180:
-                    break
-        
-        extracted_summary = "\n".join(summary_lines)
-        if len(extracted_summary) > 220:
-            extracted_summary = extracted_summary[:217] + "..."
+
+        full_summary_text = " ".join(summary_lines)
+        extracted_summary = summarize_text_jp(full_summary_text, max_chars=130)
 
         return {
             "title": title,
@@ -145,7 +185,7 @@ def fetch_page_info(url):
         }
 
 def draw_white_glow(img, bbox, mode="glow"):
-    """テキスト背面をふんわりぼかした白背景（白モヤ）にする関数"""
+    """テキスト背面をふんわりぼかした白背景にする関数"""
     x1, y1, x2, y2 = bbox
     mask = Image.new('L', (1080, 1080), 0)
     draw_mask = ImageDraw.Draw(mask)
@@ -164,13 +204,20 @@ def draw_white_glow(img, bbox, mode="glow"):
     img.paste(white_layer, (0, 0), blurred_mask)
 
 def smart_wrap(text, font, max_width):
+    """単語・文脈の区切り（BudouX）を意識した自然な改行処理"""
     if not text:
         return []
 
+    if parser:
+        chunks = parser.parse(text)
+    else:
+        chunks = list(text)
+
     lines = []
     current_line = ""
-    for char in text:
-        test_line = current_line + char
+
+    for chunk in chunks:
+        test_line = current_line + chunk
         try:
             w = font.getbbox(test_line)[2] - font.getbbox(test_line)[0]
         except AttributeError:
@@ -179,8 +226,17 @@ def smart_wrap(text, font, max_width):
         if w <= max_width:
             current_line = test_line
         else:
-            lines.append(current_line)
-            current_line = char
+            if current_line:
+                lines.append(current_line)
+                current_line = chunk
+            else:
+                for char in chunk:
+                    if font.getbbox(current_line + char)[2] - font.getbbox(current_line + char)[0] <= max_width:
+                        current_line += char
+                    else:
+                        lines.append(current_line)
+                        current_line = char
+
     if current_line:
         lines.append(current_line)
     return lines
@@ -244,7 +300,7 @@ def draw_image_page(img, 挿入画像):
             st.warning("画像の読み込みに失敗しました。")
 
 def draw_text_page(img, title, text):
-    """3枚目（詳細テキスト画面）の描画（タイトル位置調整＋テキスト部のみ白モヤ＋中央揃え）"""
+    """3枚目（詳細テキスト画面）の描画"""
     target_text_w = 680
     
     title_start_y = 310
@@ -254,14 +310,16 @@ def draw_text_page(img, title, text):
     if title and title.strip():
         title_lines, f_title = wrap_and_get_font(title, max_width=720, initial_size=38, min_size=24, max_lines=2)
 
-    # 本文折り返しと全体高さの事前計算（白モヤの範囲を決めるため）
+    # 自然な文章として短縮（箇条書きなし）
+    clean_summary_text = summarize_text_jp(text, max_chars=130)
+
     font_size = 26
     f_detail = get_font(font_size)
     paragraphs_wrapped = []
     total_lines = 0
 
-    if text and text.strip():
-        raw_paragraphs = text.split('\n')
+    if clean_summary_text:
+        raw_paragraphs = clean_summary_text.split('\n')
         for p in raw_paragraphs:
             if not p.strip():
                 paragraphs_wrapped.append([])
@@ -274,12 +332,11 @@ def draw_text_page(img, title, text):
     title_h = len(title_lines) * (getattr(f_title, 'size', 32) * 1.35)
     body_h = (total_lines * line_height) + (len(paragraphs_wrapped) * 6)
     
-    # 3枚目のテキストエリア全体に白モヤ（ぼかし白背景）を描画
     card_top = int(title_start_y - 30)
     card_bottom = int(title_start_y + title_h + body_h + 60)
     draw_white_glow(img, (140, card_top, 940, card_bottom), mode="card")
 
-    # --- タイトル描画 ---
+    # タイトル描画
     if title_lines:
         for line in title_lines:
             try:
@@ -294,7 +351,7 @@ def draw_text_page(img, title, text):
             d.text((540, curr_t_y), line, fill=(30, 30, 30), font=f_title, anchor="mm")
             curr_t_y += font_s * 1.35
 
-    # --- 本文描画（完全中央揃え） ---
+    # 本文描画（完全中央揃え・自然な文章）
     if paragraphs_wrapped:
         curr_y = max(curr_t_y + 30, 440)
         d = ImageDraw.Draw(img)
@@ -321,7 +378,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
     generated_images = []
 
-    # --- 1枚目生成 ---
+    # 1枚目生成
     img1 = get_bg(mode)
 
     if mode == "研修会情報":
@@ -368,7 +425,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
         generated_images.append(img2)
 
     else:
-        # お知らせ用 1枚目（白モヤ背景復活）
+        # お知らせ用 1枚目
         title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=820, initial_size=58, min_size=28, max_lines=4)
         font_size = getattr(f_title, 'size', 36)
         line_height = font_size * 1.45
@@ -381,7 +438,6 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
         start_y = 540 - (total_height / 2)
 
-        # 1枚目の白モヤを描画
         bbox = (120, int(240), 960, int(start_y + total_height + 20))
         draw_white_glow(img1, bbox, mode="glow")
 
@@ -436,7 +492,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
         if second_type == "📷 画像のみ":
             content_str = "添付画像をご確認ください。"
         elif second_type == "📝 テキストのみ":
-            content_str = 詳細テキスト if 詳細テキスト else "詳細内容は画像をご確認ください。"
+            content_str = summarize_text_jp(詳細テキスト, max_chars=130) if 詳細テキスト else "詳細内容は画像をご確認ください。"
         else:
             content_str = "詳細内容は添付画像（2〜3枚目）をご確認ください。"
             

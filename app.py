@@ -144,6 +144,25 @@ def fetch_page_info(url):
             "title": "", "subtitle": "", "date": "", "place": "", "org": "", "summary": "", "error": str(e)
         }
 
+def draw_white_glow(img, bbox, mode="glow"):
+    """テキスト背面をふんわりぼかした白背景（白モヤ）にする関数"""
+    x1, y1, x2, y2 = bbox
+    mask = Image.new('L', (1080, 1080), 0)
+    draw_mask = ImageDraw.Draw(mask)
+    
+    if mode == "card":
+        rect_box = (x1, y1, x2, y2)
+        draw_mask.rounded_rectangle(rect_box, radius=30, fill=230)
+        blurred_mask = mask.filter(ImageFilter.GaussianBlur(15))
+    else:
+        padding = 50
+        rect_box = (max(0, x1 - padding), max(0, y1 - padding), min(1080, x2 + padding), min(1080, y2 + padding))
+        draw_mask.rounded_rectangle(rect_box, radius=40, fill=220)
+        blurred_mask = mask.filter(ImageFilter.GaussianBlur(30))
+    
+    white_layer = Image.new('RGB', (1080, 1080), (255, 255, 255))
+    img.paste(white_layer, (0, 0), blurred_mask)
+
 def smart_wrap(text, font, max_width):
     if not text:
         return []
@@ -181,21 +200,17 @@ def wrap_and_get_font(text, max_width=860, initial_size=60, min_size=20, max_lin
 
     return lines[:max_lines], font
 
-def get_bg(mode, blur=False):
+def get_bg(mode):
     target_bg = BG_IMAGE_NOTICE if mode == "お知らせ" else BG_IMAGE_DEFAULT
     bg_p = os.path.join(BASE_DIR, target_bg)
     default_bg_p = os.path.join(BASE_DIR, BG_IMAGE_DEFAULT)
     
     if os.path.exists(bg_p):
-        img = Image.open(bg_p).convert('RGB').resize((1080, 1080))
+        return Image.open(bg_p).convert('RGB').resize((1080, 1080))
     elif os.path.exists(default_bg_p):
-        img = Image.open(default_bg_p).convert('RGB').resize((1080, 1080))
+        return Image.open(default_bg_p).convert('RGB').resize((1080, 1080))
     else:
-        img = Image.new('RGB', (1080, 1080), color=(255, 255, 255))
-        
-    if blur:
-        img = img.filter(ImageFilter.GaussianBlur(10)) # 背景をぼかす
-    return img
+        return Image.new('RGB', (1080, 1080), color=(255, 255, 255))
 
 def draw_pink_underline(img, center_x, y_bottom, text_width, height=14):
     overlay = Image.new('RGBA', img.size, (255, 255, 255, 0))
@@ -229,48 +244,59 @@ def draw_image_page(img, 挿入画像):
             st.warning("画像の読み込みに失敗しました。")
 
 def draw_text_page(img, title, text):
-    """3枚目（詳細テキスト画面）の描画（タイトル位置修正・背景ぼかし・中央揃え）"""
-    target_text_w = 680  # 中央に綺麗に収まる幅設定
+    """3枚目（詳細テキスト画面）の描画（タイトル位置調整＋テキスト部のみ白モヤ＋中央揃え）"""
+    target_text_w = 680
     
-    # --- 1. タイトル描画（位置を下げて枠内に収める） ---
-    title_start_y = 310  # 250から310に下げて枠内に移動
+    title_start_y = 310
     curr_t_y = title_start_y
 
+    title_lines, f_title = ([], get_font(32))
     if title and title.strip():
         title_lines, f_title = wrap_and_get_font(title, max_width=720, initial_size=38, min_size=24, max_lines=2)
-        font_size = getattr(f_title, 'size', 32)
-        line_height = font_size * 1.35
 
-        for line in title_lines:
-            try:
-                w = f_title.getbbox(line)[2] - f_title.getbbox(line)[0]
-            except AttributeError:
-                w = f_title.getsize(line)[0]
-            
-            draw_pink_underline(img, 540, curr_t_y + (font_size / 2) - 2, w, height=12)
+    # 本文折り返しと全体高さの事前計算（白モヤの範囲を決めるため）
+    font_size = 26
+    f_detail = get_font(font_size)
+    paragraphs_wrapped = []
+    total_lines = 0
 
-            d = ImageDraw.Draw(img)
-            d.text((540, curr_t_y), line, fill=(30, 30, 30), font=f_title, anchor="mm")
-            curr_t_y += line_height
-
-    # --- 2. 本文描画（完全中央揃え） ---
     if text and text.strip():
         raw_paragraphs = text.split('\n')
-        
-        font_size = 26
-        f_detail = get_font(font_size)
-
-        paragraphs_wrapped = []
         for p in raw_paragraphs:
             if not p.strip():
                 paragraphs_wrapped.append([])
                 continue
             wrapped = smart_wrap(p, f_detail, target_text_w)
             paragraphs_wrapped.append(wrapped)
+            total_lines += len(wrapped)
 
-        line_height = font_size * 1.6
+    line_height = font_size * 1.6
+    title_h = len(title_lines) * (getattr(f_title, 'size', 32) * 1.35)
+    body_h = (total_lines * line_height) + (len(paragraphs_wrapped) * 6)
+    
+    # 3枚目のテキストエリア全体に白モヤ（ぼかし白背景）を描画
+    card_top = int(title_start_y - 30)
+    card_bottom = int(title_start_y + title_h + body_h + 60)
+    draw_white_glow(img, (140, card_top, 940, card_bottom), mode="card")
+
+    # --- タイトル描画 ---
+    if title_lines:
+        for line in title_lines:
+            try:
+                w = f_title.getbbox(line)[2] - f_title.getbbox(line)[0]
+            except AttributeError:
+                w = f_title.getsize(line)[0]
+            
+            font_s = getattr(f_title, 'size', 32)
+            draw_pink_underline(img, 540, curr_t_y + (font_s / 2) - 2, w, height=12)
+
+            d = ImageDraw.Draw(img)
+            d.text((540, curr_t_y), line, fill=(30, 30, 30), font=f_title, anchor="mm")
+            curr_t_y += font_s * 1.35
+
+    # --- 本文描画（完全中央揃え） ---
+    if paragraphs_wrapped:
         curr_y = max(curr_t_y + 30, 440)
-
         d = ImageDraw.Draw(img)
 
         for lines in paragraphs_wrapped:
@@ -279,7 +305,6 @@ def draw_text_page(img, title, text):
                 continue
 
             for line in lines:
-                # anchor="mm"（中央揃え）で描画
                 d.text((540, curr_y), line, fill=(40, 40, 40), font=f_detail, anchor="mm")
                 curr_y += line_height
             
@@ -298,9 +323,9 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
     # --- 1枚目生成 ---
     img1 = get_bg(mode)
-    d1 = ImageDraw.Draw(img1)
 
     if mode == "研修会情報":
+        d1 = ImageDraw.Draw(img1)
         d1.text((540, 270), clean_org, fill=(30, 30, 30), font=f_org, anchor="mm")
 
         title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=880, initial_size=58, min_size=20, max_lines=3)
@@ -343,7 +368,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
         generated_images.append(img2)
 
     else:
-        # お知らせ用 1枚目
+        # お知らせ用 1枚目（白モヤ背景復活）
         title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=820, initial_size=58, min_size=28, max_lines=4)
         font_size = getattr(f_title, 'size', 36)
         line_height = font_size * 1.45
@@ -356,6 +381,11 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
         start_y = 540 - (total_height / 2)
 
+        # 1枚目の白モヤを描画
+        bbox = (120, int(240), 960, int(start_y + total_height + 20))
+        draw_white_glow(img1, bbox, mode="glow")
+
+        d1 = ImageDraw.Draw(img1)
         d1.text((540, 270), clean_org, fill=(30, 30, 30), font=f_org, anchor="mm")
 
         curr_y = start_y + (line_height / 2)
@@ -378,7 +408,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
             generated_images.append(img2)
             
         elif second_type == "📝 テキストのみ":
-            img2 = get_bg(mode, blur=True)  # 背景をぼかす
+            img2 = get_bg(mode)
             draw_text_page(img2, タイトル, 詳細テキスト)
             generated_images.append(img2)
             
@@ -387,7 +417,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
             draw_image_page(img2, 挿入画像)
             generated_images.append(img2)
             
-            img3 = get_bg(mode, blur=True)  # 背景をぼかす
+            img3 = get_bg(mode)
             draw_text_page(img3, タイトル, 詳細テキスト)
             generated_images.append(img3)
 

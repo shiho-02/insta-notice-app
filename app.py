@@ -243,42 +243,47 @@ def draw_image_page(img, 挿入画像):
         except Exception:
             st.warning("画像の読み込みに失敗しました。")
 
-def draw_justified_text(draw, start_x, start_y, line, font, target_width, is_last_line=False):
-    """両端揃え（幅揃え）で1行分のテキストを描画する処理"""
+def draw_justified_line(draw, line, font, start_x, y, target_width, is_last_line=False):
+    """1行分のテキストの両端幅を計算して厳密に揃えて描画する関数"""
     if not line:
         return
-
-    if is_last_line or len(line) <= 1:
-        # 段落の最後の行や1文字の行は通常の左揃え
-        draw.text((start_x, start_y), line, fill=(40, 40, 40), font=font)
-        return
-
-    try:
-        total_text_width = font.getbbox(line)[2] - font.getbbox(line)[0]
-    except AttributeError:
-        total_text_width = font.getsize(line)[0]
-
-    space_to_distribute = target_width - total_text_width
     
-    # 隙間が広すぎる場合（短すぎる行）は幅調整をスキップ
-    if space_to_distribute < 0 or space_to_distribute > (target_width * 0.35):
-        draw.text((start_x, start_y), line, fill=(40, 40, 40), font=font)
+    # 最終行、あるいは1文字のみの場合は幅を揃えず左揃えで描画
+    if is_last_line or len(line) <= 1:
+        draw.text((start_x, y), line, fill=(40, 40, 40), font=font)
         return
 
-    gap_per_char = space_to_distribute / (len(line) - 1)
+    # 全文字の本来の幅の合計を取得
+    char_widths = []
+    for char in line:
+        try:
+            bbox = font.getbbox(char)
+            w = bbox[2] - bbox[0]
+        except AttributeError:
+            w = font.getsize(char)[0]
+        char_widths.append(w)
+    
+    total_char_w = sum(char_widths)
+    
+    # 揃えるべき残りの余白幅
+    extra_space = target_width - total_char_w
+    
+    # 余白がマイナス、または広すぎる場合（不自然になる場合）は通常の左揃え
+    if extra_space <= 0 or extra_space > (target_width * 0.3):
+        draw.text((start_x, y), line, fill=(40, 40, 40), font=font)
+        return
+
+    gap = extra_space / (len(line) - 1)
     
     curr_x = start_x
     for i, char in enumerate(line):
-        draw.text((curr_x, start_y), char, fill=(40, 40, 40), font=font)
-        try:
-            char_w = font.getbbox(char)[2] - font.getbbox(char)[0]
-        except AttributeError:
-            char_w = font.getsize(char)[0]
-        curr_x += char_w + gap_per_char
+        draw.text((curr_x, y), char, fill=(40, 40, 40), font=font)
+        curr_x += char_widths[i] + gap
 
 def draw_text_page(img, title, text):
-    """3枚目（詳細テキスト画面）のテキスト描画処理（幅揃え版）"""
-    max_w = 750  # 幅を固定してきれいに揃える
+    """3枚目（詳細テキスト画面）の描画"""
+    target_text_w = 740  # テキストの両端幅を740pxに統一
+    card_w = 820         # 白背景カードの幅
     
     # --- 1. タイトル描画（上部配置＋ピンク下線） ---
     title_start_y = 250
@@ -300,46 +305,45 @@ def draw_text_page(img, title, text):
             d.text((540, curr_t_y), line, fill=(30, 30, 30), font=f_title, anchor="mm")
             curr_t_y += line_height
 
-    # --- 2. 本文描画（幅揃え調整） ---
+    # --- 2. 本文描画（左右端ピッタリ揃え） ---
     if text and text.strip():
         raw_paragraphs = text.split('\n')
         
         font_size = 28
         f_detail = get_font(font_size)
 
-        lines_struct = []
+        paragraphs_wrapped = []
         total_lines_count = 0
 
         for p in raw_paragraphs:
             if not p.strip():
-                lines_struct.append([])
+                paragraphs_wrapped.append([])
                 continue
-            wrapped = smart_wrap(p, f_detail, max_w)
-            lines_struct.append(wrapped)
+            wrapped = smart_wrap(p, f_detail, target_text_w)
+            paragraphs_wrapped.append(wrapped)
             total_lines_count += len(wrapped)
 
         if total_lines_count > 10:
             font_size = 24
             f_detail = get_font(font_size)
-            lines_struct = []
+            paragraphs_wrapped = []
             total_lines_count = 0
             for p in raw_paragraphs:
                 if not p.strip():
-                    lines_struct.append([])
+                    paragraphs_wrapped.append([])
                     continue
-                wrapped = smart_wrap(p, f_detail, max_w)
-                lines_struct.append(wrapped)
+                wrapped = smart_wrap(p, f_detail, target_text_w)
+                paragraphs_wrapped.append(wrapped)
                 total_lines_count += len(wrapped)
 
         line_height = font_size * 1.55
-        total_text_height = (line_height * max(1, total_lines_count)) + (len(raw_paragraphs) * 8)
+        total_text_height = (line_height * max(1, total_lines_count)) + (len(raw_paragraphs) * 6)
 
         start_y = 410
-        card_w = 840
-        start_x = 540 - (max_w / 2)
+        start_x = 540 - (target_text_w / 2)
 
         # 白カード描画
-        padding_y = 40
+        padding_y = 35
         bbox = (
             int(540 - (card_w // 2)), 
             int(start_y), 
@@ -351,17 +355,17 @@ def draw_text_page(img, title, text):
         d = ImageDraw.Draw(img)
         curr_y = start_y + padding_y
 
-        for paragraph_lines in lines_struct:
-            if not paragraph_lines:
-                curr_y += line_height * 0.5
+        for lines in paragraphs_wrapped:
+            if not lines:
+                curr_y += line_height * 0.4
                 continue
 
-            for idx, line in enumerate(paragraph_lines):
-                is_last = (idx == len(paragraph_lines) - 1)
-                draw_justified_text(d, start_x, curr_y, line, f_detail, max_w, is_last_line=is_last)
+            for idx, line in enumerate(lines):
+                is_last = (idx == len(lines) - 1)
+                draw_justified_line(d, line, f_detail, start_x, curr_y, target_text_w, is_last_line=is_last)
                 curr_y += line_height
             
-            curr_y += 8
+            curr_y += 6
 
 def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項目2, second_type, 挿入画像, 詳細テキスト, ハッシュタグ):
     f_org = get_font(36)

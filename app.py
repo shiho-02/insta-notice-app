@@ -63,8 +63,8 @@ def clean_scraped_text(text):
         cleaned_lines.append(l)
     return " ".join(cleaned_lines)
 
-def summarize_text_jp(text, max_chars=150):
-    """円の中に綺麗に収まるよう、目標150文字程度でしっかり要約"""
+def summarize_text_jp(text, max_chars=160):
+    """円の中に収まる十分なテキスト量（150文字程度）をしっかり抽出"""
     clean_text = clean_scraped_text(text)
     if not clean_text:
         return ""
@@ -73,7 +73,10 @@ def summarize_text_jp(text, max_chars=150):
     clean_text = re.sub(r'\s+', ' ', clean_text).strip()
 
     sentences = re.split(r'(?<=[。！？!\?])', clean_text)
-    sentences = [s.strip() for s in sentences if len(s.strip()) > 5]
+    sentences = [s.strip() for s in sentences if len(s.strip()) > 3]
+
+    if not sentences:
+        return clean_text[:max_chars]
 
     selected = []
     curr_len = 0
@@ -87,6 +90,8 @@ def summarize_text_jp(text, max_chars=150):
             break
 
     res = "".join(selected).strip()
+    if not res:
+        res = clean_text[:max_chars]
     if res and not res.endswith(('。', '！', '？', '...')):
         res += "。"
     return res
@@ -135,8 +140,8 @@ def smart_wrap(text, font, max_width):
 
     return lines
 
-def wrap_and_get_font(text, max_width=460, initial_size=34, min_size=18, max_lines=6):
-    """指定幅・行数に収まるよう自動でフォントサイズを縮小"""
+def wrap_and_get_font(text, max_width=460, initial_size=32, min_size=16, max_lines=7):
+    """指定幅・行数に収まるよう自動でフォントサイズを調整"""
     if not text:
         return [""], get_font(min_size)
 
@@ -146,14 +151,14 @@ def wrap_and_get_font(text, max_width=460, initial_size=34, min_size=18, max_lin
         lines = smart_wrap(text, font, max_width)
         if len(lines) <= max_lines:
             return lines, font
-        size -= 2
+        size -= 1
 
     font = get_font(min_size)
     lines = smart_wrap(text, font, max_width)
     return lines[:max_lines], font
 
 def fetch_page_info(url):
-    """Webページ情報自動読み込み（文字数拡大版）"""
+    """Webページ情報自動読み込み（文字数拡大・要約強化版）"""
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -213,7 +218,7 @@ def fetch_page_info(url):
                 else:
                     extracted_org = comm_name
 
-        extracted_summary = summarize_text_jp(main_content.get_text(), max_chars=150)
+        extracted_summary = summarize_text_jp(main_content.get_text(), max_chars=160)
 
         return {
             "title": title,
@@ -234,28 +239,33 @@ def get_bg(mode):
     bg_p = os.path.join(BASE_DIR, target_bg)
     default_bg_p = os.path.join(BASE_DIR, BG_IMAGE_DEFAULT)
     if os.path.exists(bg_p):
-        return Image.open(bg_p).convert('RGB').resize((1080, 1080))
+        return Image.open(bg_p).convert('RGBA').resize((1080, 1080))
     elif os.path.exists(default_bg_p):
-        return Image.open(default_bg_p).convert('RGB').resize((1080, 1080))
+        return Image.open(default_bg_p).convert('RGBA').resize((1080, 1080))
     else:
-        return Image.new('RGB', (1080, 1080), color=(255, 255, 255))
+        return Image.new('RGBA', (1080, 1080), color=(255, 255, 255, 255))
 
-def draw_white_background_blur(img, center_x=540, center_y=540, radius=290, blur_radius=18):
-    """背景の白ぼかし（円形ソフトホワイト）を確実に描画"""
-    overlay = Image.new('RGBA', img.size, (255, 255, 255, 0))
-    draw = ImageDraw.Draw(overlay)
+def draw_white_background_blur(img, center_x=540, center_y=540, radius=310, blur_radius=20):
+    """背景の上に明るくはっきりと白いぼかし円を描画合成"""
+    circle_mask = Image.new('RGBA', img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(circle_mask)
     x1 = center_x - radius
     y1 = center_y - radius
     x2 = center_x + radius
     y2 = center_y + radius
     
-    draw.ellipse([x1, y1, x2, y2], fill=(255, 255, 255, 240))
-    blurred = overlay.filter(ImageFilter.GaussianBlur(radius=blur_radius))
-    img.paste(blurred, (0, 0), blurred)
+    # ほぼ不透明（250/255）な純白の円を描く
+    draw.ellipse([x1, y1, x2, y2], fill=(255, 255, 255, 250))
+    
+    # 外周をぼかす
+    blurred_circle = circle_mask.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    
+    # 背景画像に合成
+    img.alpha_composite(blurred_circle)
 
 def draw_pink_underline(img, center_x, y_bottom, text_width, height=12):
     """ピンクの蛍光ペン風マーカー（ぼかし付き）"""
-    overlay = Image.new('RGBA', img.size, (255, 255, 255, 0))
+    overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     x1 = center_x - (text_width / 2) - 10
     x2 = center_x + (text_width / 2) + 10
@@ -264,7 +274,7 @@ def draw_pink_underline(img, center_x, y_bottom, text_width, height=12):
     
     draw.rounded_rectangle([x1, y1, x2, y2], radius=height//2, fill=(255, 130, 170, 200))
     blurred_overlay = overlay.filter(ImageFilter.GaussianBlur(radius=3))
-    img.paste(blurred_overlay, (0, 0), blurred_overlay)
+    img.alpha_composite(blurred_overlay)
 
 def draw_image_page(img, 挿入画像):
     if 挿入画像 is not None:
@@ -281,29 +291,32 @@ def draw_image_page(img, 挿入画像):
 
                 pos_x = (1080 - insert_img.width) // 2
                 pos_y = (1080 - insert_img.height) // 2
-                img.paste(insert_img, (pos_x, pos_y), mask=insert_img)
+                img.alpha_composite(insert_img, (pos_x, pos_y))
         except Exception:
             st.warning("画像の読み込みに失敗しました。")
 
 def draw_text_page(img, title, text):
     """テキスト詳細ページ（3枚目等）：背景白ぼかしの上に150文字前後の文章を配置"""
-    draw_white_background_blur(img, center_x=540, center_y=540, radius=290, blur_radius=18)
+    # 1. 白ぼかし円を描画
+    draw_white_background_blur(img, center_x=540, center_y=540, radius=310, blur_radius=20)
 
-    max_circle_w = 460
+    max_circle_w = 480
 
+    # タイトル
     title_lines, f_title = ([], get_font(28))
     if title and title.strip():
         clean_t = clean_scraped_text(title)
-        title_lines, f_title = wrap_and_get_font(clean_t, max_width=max_circle_w, initial_size=30, min_size=20, max_lines=2)
+        title_lines, f_title = wrap_and_get_font(clean_t, max_width=max_circle_w, initial_size=28, min_size=20, max_lines=2)
 
-    clean_summary_text = summarize_text_jp(text, max_chars=150)
-    body_lines, f_body = wrap_and_get_font(clean_summary_text, max_width=max_circle_w, initial_size=24, min_size=18, max_lines=6)
+    # テキスト（入力値そのまま、または要約して十分な量を保持）
+    display_text = text if len(text) <= 160 else summarize_text_jp(text, max_chars=160)
+    body_lines, f_body = wrap_and_get_font(display_text, max_width=max_circle_w, initial_size=24, min_size=16, max_lines=7)
 
     title_size = getattr(f_title, 'size', 28)
     body_size = getattr(f_body, 'size', 22)
 
     title_lh = title_size * 1.4
-    body_lh = body_size * 1.5
+    body_lh = body_size * 1.45
 
     total_title_h = len(title_lines) * title_lh
     total_body_h = len(body_lines) * body_lh
@@ -332,7 +345,7 @@ def draw_text_page(img, title, text):
         curr_y = start_y + (body_lh / 2)
 
     for line in body_lines:
-        d.text((540, curr_y), line, fill=(50, 50, 50), font=f_body, anchor="mm")
+        d.text((540, curr_y), line, fill=(40, 40, 40), font=f_body, anchor="mm")
         curr_y += body_lh
 
 def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項目2, second_type, 挿入画像, 詳細テキスト, ハッシュタグ):
@@ -349,11 +362,11 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
     img1 = get_bg(mode)
 
     if mode == "研修会情報":
-        draw_white_background_blur(img1, center_x=540, center_y=540, radius=290, blur_radius=18)
+        draw_white_background_blur(img1, center_x=540, center_y=540, radius=310, blur_radius=20)
         d1 = ImageDraw.Draw(img1)
         d1.text((540, 310), clean_org, fill=(40, 40, 40), font=f_org, anchor="mm")
 
-        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=480, initial_size=38, min_size=22, max_lines=3)
+        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=480, initial_size=36, min_size=22, max_lines=3)
         font_size = getattr(f_title, 'size', 30)
         line_height = font_size * 1.4
         total_title_height = line_height * len(title_lines)
@@ -386,17 +399,17 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
             place_val_y = place_label_y + 35
             d1.text((540, place_val_y), 項目2 or "", fill=(30, 30, 30), font=f_val, anchor="mm")
 
-        generated_images.append(img1)
+        generated_images.append(img1.convert('RGB'))
 
         img2 = get_bg(mode)
         draw_image_page(img2, 挿入画像)
-        generated_images.append(img2)
+        generated_images.append(img2.convert('RGB'))
 
     else:
-        # お知らせ 1枚目
-        draw_white_background_blur(img1, center_x=540, center_y=540, radius=290, blur_radius=18)
+        # お知らせ 1枚目（白ぼかし円合成）
+        draw_white_background_blur(img1, center_x=540, center_y=540, radius=310, blur_radius=20)
 
-        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=480, initial_size=38, min_size=22, max_lines=3)
+        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=480, initial_size=36, min_size=22, max_lines=3)
         font_size = getattr(f_title, 'size', 30)
         line_height = font_size * 1.45
         total_height = line_height * len(title_lines) + 50
@@ -423,26 +436,26 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
                 d1.text((540, curr_y), line, fill=(70, 70, 70), font=f_sub_dynamic, anchor="mm")
                 curr_y += sub_lh
 
-        generated_images.append(img1)
+        generated_images.append(img1.convert('RGB'))
 
         if second_type == "📷 画像のみ":
             img2 = get_bg(mode)
             draw_image_page(img2, 挿入画像)
-            generated_images.append(img2)
+            generated_images.append(img2.convert('RGB'))
 
         elif second_type == "📝 テキストのみ":
             img2 = get_bg(mode)
             draw_text_page(img2, タイトル, 詳細テキスト)
-            generated_images.append(img2)
+            generated_images.append(img2.convert('RGB'))
 
         elif second_type == "🖼️ 画像＋テキスト（3枚）":
             img2 = get_bg(mode)
             draw_image_page(img2, 挿入画像)
-            generated_images.append(img2)
+            generated_images.append(img2.convert('RGB'))
 
             img3 = get_bg(mode)
             draw_text_page(img3, タイトル, 詳細テキスト)
-            generated_images.append(img3)
+            generated_images.append(img3.convert('RGB'))
 
     sub_text = f"\n{サブタイトル}\n" if サブタイトル and サブタイトル.strip() else ""
     tags_text = f"\n\n{ハッシュタグ}" if ハッシュタグ and ハッシュタグ.strip() else ""
@@ -456,7 +469,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
 みなさまのご参加をお待ちしております！{tags_text}"""
     else:
-        summary_str = summarize_text_jp(詳細テキスト, max_chars=150) if 詳細テキスト else "詳細内容は画像をご確認ください。"
+        summary_str = summarize_text_jp(詳細テキスト, max_chars=160) if 詳細テキスト else "詳細内容は画像をご確認ください。"
         caption_text = f"""【{タイトル or 'お知らせ'}】
 {sub_text}
 📌 発信：{clean_org}
@@ -547,10 +560,10 @@ with col1:
                 詳細テキスト = ""
             elif second_type == "📝 テキストのみ":
                 挿入画像 = None
-                詳細テキスト = st.text_area("2枚目に表示する詳細テキスト（概要）", value=st.session_state["auto_summary"], placeholder="お知らせの概要テキストを入力してください。", height=150)
+                詳細テキスト = st.text_area("2枚目に表示する詳細テキスト（概要）", value=st.session_state["auto_summary"], placeholder="お知らせの概要テキストを入力してください。", height=180)
             else:
                 挿入画像 = st.file_uploader("2枚目に挿入する画像", type=["png", "jpg", "jpeg"])
-                詳細テキスト = st.text_area("3枚目に表示する詳細テキスト（概要）", value=st.session_state["auto_summary"], placeholder="お知らせの概要テキストを入力してください。", height=150)
+                詳細テキスト = st.text_area("3枚目に表示する詳細テキスト（概要）", value=st.session_state["auto_summary"], placeholder="お知らせの概要テキストを入力してください。", height=180)
 
         st.subheader("🏷️ 3. ハッシュタグ設定")
         ハッシュタグ = st.text_area("固定ハッシュタグ", value=DEFAULT_HASHTAGS, height=70)

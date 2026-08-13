@@ -39,52 +39,119 @@ def get_font(size):
     return ImageFont.load_default()
 
 def summarize_text_jp(text, max_chars=130):
-    """箇条書きを使わず、自然な短文の連なりとして既定の文字数内にきれいに収める関数"""
+    """不自然な文末を防ぎ、完全な一文の集まりとしてきれいに終わる要約処理"""
     if not text:
         return ""
     
-    # 箇条書き記号や不要な改行を排除し、文章として繋げる
+    # 箇条書き記号や余計な改行・空白の除去
     clean_text = re.sub(r'^[・\-*•\d+\.]+\s*', '', text, flags=re.MULTILINE)
     clean_text = re.sub(r'\s+', ' ', clean_text).strip()
     
-    if len(clean_text) <= max_chars:
-        return clean_text
+    # 句点（。！？）で文ごとに分割
+    raw_sentences = re.split(r'(?<=[。！？!\?])', clean_text)
+    valid_sentences = [s.strip() for s in raw_sentences if s.strip()]
 
-    # 句点や感嘆符で文章ごとに分割
-    sentences = re.split(r'(?<=[。！？!\?])', clean_text)
     selected_sentences = []
-    current_length = 0
+    current_len = 0
 
-    for s in sentences:
-        s_strip = s.strip()
-        if not s_strip:
-            continue
-        if current_length + len(s_strip) <= max_chars:
-            selected_sentences.append(s_strip)
-            current_length += len(s_strip)
+    for sentence in valid_sentences:
+        if current_len + len(sentence) <= max_chars:
+            selected_sentences.append(sentence)
+            current_len += len(sentence)
         else:
-            # 収まらない場合は、読点（、）の区切りで自然なところまで入れる
-            remaining = max_chars - current_length
-            if remaining >= 12:
-                sub_parts = re.split(r'(?<=[、,])', s_strip)
-                for sub in sub_parts:
-                    if current_length + len(sub) <= max_chars:
-                        selected_sentences.append(sub)
-                        current_length += len(sub)
-                    else:
-                        break
+            # 収まらない場合、途中で切らずにそれまでの完成した文で終了する
             break
 
+    # 1文目すら長すぎて収まらなかった場合の補正
+    if not selected_sentences and valid_sentences:
+        first_sentence = valid_sentences[0]
+        # 読点（、）などで自然な場所を探す
+        comma_parts = re.split(r'(?<=[、,])', first_sentence)
+        sub_build = ""
+        for part in comma_parts:
+            if len(sub_build) + len(part) <= max_chars - 8:
+                sub_build += part
+            else:
+                break
+        if sub_build:
+            # 不自然な接尾語（〜の、〜について、〜および 等）をカット
+            sub_build = re.sub(r'(について|の|および|また|ならびに|における|等|など|へ|より|で)$', '', sub_build.strip())
+            return sub_build + "でお知らせします。"
+        else:
+            return first_sentence[:max_chars - 8] + "についてお知らせします。"
+
     result = "".join(selected_sentences).strip()
-    if not result:
-        result = clean_text[:max_chars - 3] + "..."
-    elif not result.endswith(('。', '！', '！', '？', '?')):
+    
+    # 不自然な文末記号のチェック補正
+    if result and not result.endswith(('。', '！', '？', '!')):
         result += "。"
 
     return result
 
+def smart_wrap(text, font, max_width):
+    """文脈・単語の区切り（BudouX）を尊重した自然な行分割"""
+    if not text:
+        return []
+
+    if parser:
+        chunks = parser.parse(text)
+    else:
+        # parserがない場合も助詞や記号の前後をある程度考慮
+        chunks = re.split(r'(?<=[\s、。！？\-\:\/])', text)
+        if len(chunks) == 1:
+            chunks = list(text)
+
+    lines = []
+    current_line = ""
+
+    for chunk in chunks:
+        test_line = current_line + chunk
+        try:
+            w = font.getbbox(test_line)[2] - font.getbbox(test_line)[0]
+        except AttributeError:
+            w = font.getsize(test_line)[0]
+
+        if w <= max_width:
+            current_line = test_line
+        else:
+            if current_line:
+                lines.append(current_line)
+                current_line = chunk
+            else:
+                # 1つのチャンク自体が幅を超える場合の文字単位分割
+                for char in chunk:
+                    if font.getbbox(current_line + char)[2] - font.getbbox(current_line + char)[0] <= max_width:
+                        current_line += char
+                    else:
+                        lines.append(current_line)
+                        current_line = char
+
+    if current_line:
+        lines.append(current_line)
+    return lines
+
+def wrap_and_get_font(text, max_width=860, initial_size=58, min_size=24, max_lines=3):
+    """単語の分割を極力避けつつ最適なフォントサイズと行数を計算"""
+    if not text:
+        return [""], get_font(min_size)
+
+    size = initial_size
+    while size >= min_size:
+        font = get_font(size)
+        lines = smart_wrap(text, font, max_width)
+        
+        # 指定行数以内に収まり、かつ極端に短すぎる単語だけがはみ出していないか
+        if len(lines) <= max_lines:
+            return lines, font
+        
+        size -= 2
+
+    font = get_font(min_size)
+    lines = smart_wrap(text, font, max_width)
+    return lines[:max_lines], font
+
 def fetch_page_info(url):
-    """記事本文からタイトル・サブタイトル・日時・場所・発信元(主催)・概要文(テキスト)を抽出する関数"""
+    """記事本文から各種情報を抽出"""
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -203,59 +270,6 @@ def draw_white_glow(img, bbox, mode="glow"):
     white_layer = Image.new('RGB', (1080, 1080), (255, 255, 255))
     img.paste(white_layer, (0, 0), blurred_mask)
 
-def smart_wrap(text, font, max_width):
-    """単語・文脈の区切り（BudouX）を意識した自然な改行処理"""
-    if not text:
-        return []
-
-    if parser:
-        chunks = parser.parse(text)
-    else:
-        chunks = list(text)
-
-    lines = []
-    current_line = ""
-
-    for chunk in chunks:
-        test_line = current_line + chunk
-        try:
-            w = font.getbbox(test_line)[2] - font.getbbox(test_line)[0]
-        except AttributeError:
-            w = font.getsize(test_line)[0]
-
-        if w <= max_width:
-            current_line = test_line
-        else:
-            if current_line:
-                lines.append(current_line)
-                current_line = chunk
-            else:
-                for char in chunk:
-                    if font.getbbox(current_line + char)[2] - font.getbbox(current_line + char)[0] <= max_width:
-                        current_line += char
-                    else:
-                        lines.append(current_line)
-                        current_line = char
-
-    if current_line:
-        lines.append(current_line)
-    return lines
-
-def wrap_and_get_font(text, max_width=860, initial_size=60, min_size=20, max_lines=3):
-    if not text:
-        return [""], get_font(min_size)
-
-    size = initial_size
-    font = get_font(size)
-    lines = smart_wrap(text, font, max_width)
-
-    while size >= min_size and len(lines) > max_lines:
-        size -= 2
-        font = get_font(size)
-        lines = smart_wrap(text, font, max_width)
-
-    return lines[:max_lines], font
-
 def get_bg(mode):
     target_bg = BG_IMAGE_NOTICE if mode == "お知らせ" else BG_IMAGE_DEFAULT
     bg_p = os.path.join(BASE_DIR, target_bg)
@@ -300,7 +314,7 @@ def draw_image_page(img, 挿入画像):
             st.warning("画像の読み込みに失敗しました。")
 
 def draw_text_page(img, title, text):
-    """3枚目（詳細テキスト画面）の描画"""
+    """テキスト詳細画面の描画"""
     target_text_w = 680
     
     title_start_y = 310
@@ -308,9 +322,9 @@ def draw_text_page(img, title, text):
 
     title_lines, f_title = ([], get_font(32))
     if title and title.strip():
-        title_lines, f_title = wrap_and_get_font(title, max_width=720, initial_size=38, min_size=24, max_lines=2)
+        title_lines, f_title = wrap_and_get_font(title, max_width=720, initial_size=36, min_size=24, max_lines=2)
 
-    # 自然な文章として短縮（箇条書きなし）
+    # 自然な完結文に整えた要約を取得
     clean_summary_text = summarize_text_jp(text, max_chars=130)
 
     font_size = 26
@@ -385,7 +399,8 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
         d1 = ImageDraw.Draw(img1)
         d1.text((540, 270), clean_org, fill=(30, 30, 30), font=f_org, anchor="mm")
 
-        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=880, initial_size=58, min_size=20, max_lines=3)
+        # 1枚目タイトルを不自然な位置で改行させないよう自動サイズ調整・区切り位置制御
+        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=860, initial_size=54, min_size=24, max_lines=3)
         font_size = getattr(f_title, 'size', 36)
         line_height = font_size * 1.4
         total_title_height = line_height * len(title_lines)
@@ -398,7 +413,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
         current_y = title_start_y + total_title_height + 15
 
         if display_subtitle:
-            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=880, initial_size=32, min_size=20, max_lines=2)
+            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=860, initial_size=32, min_size=20, max_lines=2)
             sub_line_height = getattr(f_sub_dynamic, 'size', 28) * 1.25
             for line in sub_lines:
                 d1.text((540, current_y), line, fill=(50, 50, 50), font=f_sub_dynamic, anchor="mm")
@@ -426,14 +441,14 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
     else:
         # お知らせ用 1枚目
-        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=820, initial_size=58, min_size=28, max_lines=4)
+        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=820, initial_size=54, min_size=26, max_lines=3)
         font_size = getattr(f_title, 'size', 36)
         line_height = font_size * 1.45
         total_height = line_height * len(title_lines)
         
         sub_lines, f_sub_dynamic = ([], get_font(32))
         if display_subtitle:
-            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=820, initial_size=32, min_size=20, max_lines=2)
+            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=820, initial_size=30, min_size=20, max_lines=2)
             total_height += (getattr(f_sub_dynamic, 'size', 28) * 1.3 * len(sub_lines)) + 20
 
         start_y = 540 - (total_height / 2)

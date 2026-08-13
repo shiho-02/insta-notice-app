@@ -66,14 +66,12 @@ def fetch_page_info(url):
         elif soup.title and soup.title.string:
             raw_title = soup.title.string.strip()
 
-        # サイト名などの末尾記号（| や - の後ろ）をカット
         raw_title = re.sub(r'[\-|\||│].*$', '', raw_title).strip()
         cleaned_title = raw_title.strip(" ［］[]「」『』【】\t\n")
 
         title = cleaned_title
         extracted_subtitle = ""
 
-        # サブタイトルの自動分離ロジック
         bracket_match = re.search(r'^(.*?)\s*[［\[（\(](.*?)[］\]）\)]$', cleaned_title)
         if bracket_match:
             title = bracket_match.group(1).strip(" ［］[]「」『』【】")
@@ -94,7 +92,7 @@ def fetch_page_info(url):
         extracted_date = date_match.group(2).strip() if date_match else ""
         extracted_place = place_match.group(2).strip() if place_match else ""
 
-        # --- 5. 発信元（主催・担当部会等）の抽出 ---
+        # --- 5. 発信元（主催・担当部会等）の抽出整理 ---
         extracted_org = ""
         ignore_words = ["庶務", "サイトマップ", "注意事項", "免責事項", "参加", "研修会", "案内", "詳細"]
 
@@ -106,11 +104,15 @@ def fetch_page_info(url):
                     extracted_org = candidate_sender
 
         if not extracted_org:
-            group_match = re.search(r'([^\s\n]+?(?:グループ|チーム|部|委員会|局))', text)
+            group_match = re.search(r'([^\s\n]+?(?:グループ|チーム|部|委員会|局|事務局))', text)
             if group_match:
                 candidate_group = group_match.group(1).strip().strip(" ［］[]「」『』【】\t\n")
-                if not any(word in candidate_group for word in ignore_words) and len(candidate_group) <= 20:
+                # タイトルそのものと被っている場合は除外
+                if candidate_group not in title and not any(word in candidate_group for word in ignore_words) and len(candidate_group) <= 20:
                     extracted_org = candidate_group
+
+        if "事務局" in text and not extracted_org:
+            extracted_org = "事務局"
 
         if extracted_org:
             if "作業療法士会" not in extracted_org and "島根" not in extracted_org:
@@ -118,7 +120,7 @@ def fetch_page_info(url):
         else:
             extracted_org = "（一社）島根県作業療法士会"
 
-        # --- 6. 概要（要約テキスト）の自動作成（画面サイズ内に収まる約150〜180文字） ---
+        # --- 6. 概要（要約テキスト）の自動作成 ---
         paragraphs = [p.strip() for p in text.split('\n') if p.strip()]
         summary_lines = []
         char_count = 0
@@ -129,7 +131,7 @@ def fetch_page_info(url):
             if len(p) > 10:
                 summary_lines.append(p)
                 char_count += len(p)
-                if char_count >= 180: # 1枚の画像に綺麗に収まる文量
+                if char_count >= 180:
                     break
         
         extracted_summary = "\n".join(summary_lines)
@@ -175,13 +177,32 @@ def draw_white_glow(img, bbox, mode="normal"):
     img.paste(white_layer, (0, 0), blurred_mask)
 
 def smart_wrap(text, font, max_width):
+    """「を」「に」「で」などの助詞で改行しやすいようにテキストを分割・改行処理"""
     if not text:
         return []
 
+    # 「〜を」などの後ろで強制改行を試みる分割
+    if "を" in text and len(text) > 8:
+        parts = text.split("を", 1)
+        line1 = parts[0] + "を"
+        line2 = parts[1]
+        
+        # それぞれの行が入りきるかチェック
+        try:
+            w1 = font.getbbox(line1)[2] - font.getbbox(line1)[0]
+            w2 = font.getbbox(line2)[2] - font.getbbox(line2)[0]
+        except AttributeError:
+            w1 = font.getsize(line1)[0]
+            w2 = font.getsize(line2)[0]
+
+        if w1 <= max_width and w2 <= max_width:
+            return [line1, line2]
+
+    # 通常の分かち書き処理
     if parser:
         raw_chunks = parser.parse(text)
     else:
-        raw_chunks = re.split(r'(?<=[、。・\s\─\〜~：:\-\_\/])', text)
+        raw_chunks = re.split(r'(?<=[、。・\s\─\〜~：:\-\_\/をにで])', text)
 
     chunks = []
     current_chunk = ""
@@ -219,26 +240,7 @@ def smart_wrap(text, font, max_width):
     if current_line:
         lines.append(current_line)
 
-    final_lines = []
-    for line in lines:
-        try:
-            bbox = font.getbbox(line)
-            w = bbox[2] - bbox[0]
-        except AttributeError:
-            w = font.getsize(line)[0]
-
-        if w > max_width:
-            sub_lines = textwrap.wrap(
-                line, 
-                width=max(1, int(len(line) * (max_width / w * 0.95))), 
-                break_long_words=True,
-                break_on_hyphens=False
-            )
-            final_lines.extend(sub_lines)
-        else:
-            final_lines.append(line)
-
-    return final_lines
+    return lines
 
 def wrap_and_get_font(text, max_width=860, initial_size=60, min_size=20, max_lines=3):
     if not text:
@@ -295,8 +297,22 @@ def get_bg(mode):
     else:
         return Image.new('RGB', (1080, 1080), color=(255, 255, 255))
 
+def draw_pink_underline(img, center_x, y_bottom, text_width, height=12):
+    """タイトル文字の下にピンクのマーカー下線を描画する関数"""
+    overlay = Image.new('RGBA', img.size, (255, 255, 255, 0))
+    draw = ImageDraw.Draw(overlay)
+    
+    x1 = center_x - (text_width / 2) - 10
+    x2 = center_x + (text_width / 2) + 10
+    y1 = y_bottom - (height / 2)
+    y2 = y_bottom + (height / 2)
+    
+    # やわらかく可愛いピンク（#FFB6C1 / RGBA: 255, 182, 193, 180）
+    draw.rounded_rectangle([x1, y1, x2, y2], radius=height//2, fill=(255, 150, 180, 190))
+    
+    img.paste(overlay, (0, 0), overlay)
+
 def draw_image_page(img, 挿入画像):
-    """画像を指定された背景に描画する共通関数（サイズ800x800一定）"""
     if 挿入画像 is not None:
         try:
             image_bytes = 挿入画像.getvalue()
@@ -316,7 +332,6 @@ def draw_image_page(img, 挿入画像):
             st.warning("画像の読み込みに失敗しました。")
 
 def draw_text_page(img, text):
-    """詳細テキストを指定された背景にカード形式で描画する共通関数"""
     if text and text.strip():
         max_w = 900
         init_s = 34
@@ -342,7 +357,7 @@ def draw_text_page(img, text):
             d.text((540, curr_y), line, fill=(30, 30, 30), font=f_detail, anchor="mm")
             curr_y += line_height
 
-def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項目2, second_type, 挿入画像, 詳細テキスト, ハッシュタグ):
+def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項目2, second_type, 挿入画像, 詳細テキスト, ハッシュタグ, use_underline=True):
     f_org = get_font(36)
     f_sub = get_font(32)
     f_label = get_font(28)
@@ -362,12 +377,22 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
         title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=880, initial_size=58, min_size=20, max_lines=3)
         font_size = getattr(f_title, 'size', 36)
-        line_height = font_size * 1.35
+        line_height = font_size * 1.4
         total_title_height = line_height * len(title_lines)
         title_start_y = 360 + (line_height / 2)
 
         for i, line in enumerate(title_lines):
             y = title_start_y + (i * line_height)
+            
+            # ピンクのマーカー下線を描画
+            if use_underline:
+                try:
+                    w = f_title.getbbox(line)[2] - f_title.getbbox(line)[0]
+                except AttributeError:
+                    w = f_title.getsize(line)[0]
+                draw_pink_underline(img1, 540, y + (font_size / 2) - 4, w, height=14)
+
+            d1 = ImageDraw.Draw(img1)
             d1.text((540, y), line, fill=(20, 20, 20), font=f_title, anchor="mm")
 
         current_y = title_start_y + total_title_height + 15
@@ -395,15 +420,16 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
             
         generated_images.append(img1)
 
-        # 研修会の2枚目（画像）
+        # 研修会の2枚目
         img2 = get_bg(mode)
         draw_image_page(img2, 挿入画像)
         generated_images.append(img2)
 
     else:
         # お知らせ用1枚目
-        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=820, initial_size=60, min_size=28, max_lines=4)
-        line_height = getattr(f_title, 'size', 36) * 1.35
+        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=820, initial_size=58, min_size=28, max_lines=4)
+        font_size = getattr(f_title, 'size', 36)
+        line_height = font_size * 1.45
         total_height = line_height * len(title_lines)
         
         sub_lines, f_sub_dynamic = ([], get_font(32))
@@ -421,6 +447,15 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
         curr_y = start_y + (line_height / 2)
         for line in title_lines:
+            # ピンクのマーカー下線を描画
+            if use_underline:
+                try:
+                    w = f_title.getbbox(line)[2] - f_title.getbbox(line)[0]
+                except AttributeError:
+                    w = f_title.getsize(line)[0]
+                draw_pink_underline(img1, 540, curr_y + (font_size / 2) - 4, w, height=14)
+
+            d1_glow = ImageDraw.Draw(img1)
             d1_glow.text((540, curr_y), line, fill=(20, 20, 20), font=f_title, anchor="mm")
             curr_y += line_height
 
@@ -491,7 +526,7 @@ options = ["🎓 研修会情報", "📢 お知らせ"]
 selected_option = st.pills(
     "投稿の種類",
     options,
-    default="🎓 研修会情報",
+    default="📢 お知らせ",
     label_visibility="collapsed"
 )
 
@@ -502,7 +537,7 @@ st.divider()
 col1, col2 = st.columns([1, 1])
 
 if "auto_org" not in st.session_state:
-    st.session_state["auto_org"] = "（一社）島根県作業療法士会"
+    st.session_state["auto_org"] = "（一社）島根県作業療法士会 事務局"
 if "auto_title" not in st.session_state:
     st.session_state["auto_title"] = ""
 if "auto_subtitle" not in st.session_state:
@@ -526,7 +561,7 @@ with col1:
                         st.session_state["auto_subtitle"] = info.get("subtitle", "")
                         st.session_state["auto_date"] = info.get("date", "")
                         st.session_state["auto_place"] = info.get("place", "")
-                        st.session_state["auto_org"] = info.get("org", "（一社）島根県作業療法士会")
+                        st.session_state["auto_org"] = info.get("org", "（一社）島根県作業療法士会 事務局")
                         st.session_state["auto_summary"] = info.get("summary", "")
                         st.success("情報をフォームに反映しました！")
                         st.rerun()
@@ -543,6 +578,8 @@ with col1:
             項目1 = st.text_input("開催日時", value=st.session_state["auto_date"])
             項目2 = st.text_input("開催場所", value=st.session_state["auto_place"])
             
+            use_underline = st.checkbox("🎀 タイトルにピンクの下線を引く", value=True)
+
             st.subheader("📷 2. 2枚目の画像設定")
             挿入画像 = st.file_uploader("2枚目に挿入する画像（任意）", type=["png", "jpg", "jpeg"])
             
@@ -554,6 +591,8 @@ with col1:
             タイトル = st.text_input("お知らせタイトル", value=st.session_state["auto_title"])
             サブタイトル = st.text_input("サブタイトル（不要な場合は空欄）", value=st.session_state["auto_subtitle"])
             項目1, 項目2 = "", ""
+
+            use_underline = st.checkbox("🎀 タイトルにピンクの下線を引く", value=True)
 
             st.subheader("🖼️ 2. 2枚目以降のコンテンツ選択")
             selected_type = st.radio("構成パターン", ["📷 画像のみ", "📝 テキストのみ", "🖼️ 画像＋テキスト（3枚）"], horizontal=True)
@@ -581,7 +620,7 @@ with col2:
 
         images, caption = generate_posts(
             mode, clean_org, タイトル, サブタイトル, 項目1, 項目2, 
-            second_type, 挿入画像, 詳細テキスト, ハッシュタグ
+            second_type, 挿入画像, 詳細テキスト, ハッシュタグ, use_underline=use_underline
         )
 
         st.subheader("🖼️ 完成画像")

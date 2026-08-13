@@ -39,7 +39,7 @@ def get_font(size):
     return ImageFont.load_default()
 
 def clean_scraped_text(text):
-    """不要なメタデータ・ノイズ文字列（会員の方へ、会員動向、Tweet等）を完全除去"""
+    """不要なメタデータ・ノイズ文字列を完全除去"""
     if not text:
         return ""
     text = re.sub(r'https?://[^\s\u3000]+', '', text)
@@ -63,8 +63,8 @@ def clean_scraped_text(text):
         cleaned_lines.append(l)
     return " ".join(cleaned_lines)
 
-def summarize_text_jp(text, max_chars=160):
-    """円の中に綺麗に収まるテキスト量（150文字前後）を抽出"""
+def summarize_text_jp(text, max_chars=140):
+    """中央に収まる文量（140文字程度）"""
     clean_text = clean_scraped_text(text)
     if not clean_text:
         return ""
@@ -97,7 +97,7 @@ def summarize_text_jp(text, max_chars=160):
     return res
 
 def smart_wrap(text, font, max_width):
-    """孤立文字を防ぐ折り返し処理"""
+    """自然な折り返し処理"""
     if not text:
         return []
 
@@ -140,8 +140,8 @@ def smart_wrap(text, font, max_width):
 
     return lines
 
-def wrap_and_get_font(text, max_width=480, initial_size=32, min_size=16, max_lines=7):
-    """白い円枠（幅480px程度）に納まるようフォントサイズを自動調整"""
+def wrap_and_get_font(text, max_width=380, initial_size=28, min_size=18, max_lines=6):
+    """横幅380pxに制限して中央にコンパクトにまとめる"""
     if not text:
         return [""], get_font(min_size)
 
@@ -218,7 +218,7 @@ def fetch_page_info(url):
                 else:
                     extracted_org = comm_name
 
-        extracted_summary = summarize_text_jp(main_content.get_text(), max_chars=160)
+        extracted_summary = summarize_text_jp(main_content.get_text(), max_chars=140)
 
         return {
             "title": title,
@@ -234,32 +234,51 @@ def fetch_page_info(url):
             "title": "", "subtitle": "", "date": "", "place": "", "org": "", "summary": "", "error": str(e)
         }
 
+def draw_white_blur_circle(img, radius=310, blur_radius=30, alpha=220):
+    """中央の白丸フチ周りに優しく広がる白いグラデーションぼかしを描画"""
+    overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    cx, cy = 540, 540
+    
+    # 中央の円形ぼかし
+    draw.ellipse(
+        [cx - radius, cy - radius, cx + radius, cy + radius],
+        fill=(255, 255, 255, alpha)
+    )
+    blurred_overlay = overlay.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    img.alpha_composite(blurred_overlay)
+
 def get_bg(mode):
     target_bg = BG_IMAGE_NOTICE if mode == "お知らせ" else BG_IMAGE_DEFAULT
     bg_p = os.path.join(BASE_DIR, target_bg)
     default_bg_p = os.path.join(BASE_DIR, BG_IMAGE_DEFAULT)
+    
     if os.path.exists(bg_p):
-        return Image.open(bg_p).convert('RGBA').resize((1080, 1080))
+        base_img = Image.open(bg_p).convert('RGBA').resize((1080, 1080))
     elif os.path.exists(default_bg_p):
-        return Image.open(default_bg_p).convert('RGBA').resize((1080, 1080))
+        base_img = Image.open(default_bg_p).convert('RGBA').resize((1080, 1080))
     else:
-        return Image.new('RGBA', (1080, 1080), color=(255, 255, 255, 255))
+        base_img = Image.new('RGBA', (1080, 1080), color=(255, 255, 255, 255))
 
-def draw_pink_underline(img, center_x, y_bottom, text_width, height=12):
-    """タイトル用のピンクのマーカー線"""
+    # 白いグラデーションぼかしを重ねる
+    draw_white_blur_circle(base_img, radius=300, blur_radius=25, alpha=210)
+    return base_img
+
+def draw_pink_underline(img, center_x, y_bottom, text_width, height=10):
+    """タイトル文字の下にぴったり沿うピンクマーカー線"""
     overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-    x1 = center_x - (text_width / 2) - 10
-    x2 = center_x + (text_width / 2) + 10
+    x1 = center_x - (text_width / 2) - 6
+    x2 = center_x + (text_width / 2) + 6
     y1 = y_bottom - (height / 2)
     y2 = y_bottom + (height / 2)
     
     draw.rounded_rectangle([x1, y1, x2, y2], radius=height//2, fill=(255, 130, 170, 200))
-    blurred_overlay = overlay.filter(ImageFilter.GaussianBlur(radius=2))
+    blurred_overlay = overlay.filter(ImageFilter.GaussianBlur(radius=1.5))
     img.alpha_composite(blurred_overlay)
 
 def draw_image_page(img, 挿入画像):
-    """画像ページ（白丸の中に綺麗に写真を収める）"""
+    """画像ページ"""
     if 挿入画像 is not None:
         try:
             image_bytes = 挿入画像.getvalue()
@@ -268,7 +287,7 @@ def draw_image_page(img, 挿入画像):
                 if insert_img.mode != 'RGBA':
                     insert_img = insert_img.convert('RGBA')
 
-                max_w, max_h = 560, 560
+                max_w, max_h = 500, 500
                 resample_filter = getattr(Image, 'Resampling', Image).LANCZOS
                 insert_img.thumbnail((max_w, max_h), resample_filter)
 
@@ -279,37 +298,34 @@ def draw_image_page(img, 挿入画像):
             st.warning("画像の読み込みに失敗しました。")
 
 def draw_text_page(img, title, text):
-    """テキスト詳細ページ：画像中央の白丸枠の中に文字を完璧に納める"""
-    max_circle_w = 480  # 白丸の内径に合わせた横幅
+    """テキストページ：幅380pxに制限して丸枠の中央にきれいに収める"""
+    MAX_TEXT_WIDTH = 380
 
-    # タイトル
-    title_lines, f_title = ([], get_font(28))
+    title_lines, f_title = ([], get_font(26))
     if title and title.strip():
         clean_t = clean_scraped_text(title)
-        title_lines, f_title = wrap_and_get_font(clean_t, max_width=max_circle_w, initial_size=28, min_size=20, max_lines=2)
+        title_lines, f_title = wrap_and_get_font(clean_t, max_width=MAX_TEXT_WIDTH, initial_size=26, min_size=20, max_lines=2)
 
-    # 要約テキスト
-    display_text = text if len(text) <= 160 else summarize_text_jp(text, max_chars=160)
-    body_lines, f_body = wrap_and_get_font(display_text, max_width=max_circle_w, initial_size=24, min_size=16, max_lines=7)
+    display_text = text if len(text) <= 140 else summarize_text_jp(text, max_chars=140)
+    body_lines, f_body = wrap_and_get_font(display_text, max_width=MAX_TEXT_WIDTH, initial_size=22, min_size=16, max_lines=6)
 
-    title_size = getattr(f_title, 'size', 28)
-    body_size = getattr(f_body, 'size', 22)
+    title_size = getattr(f_title, 'size', 26)
+    body_size = getattr(f_body, 'size', 20)
 
-    title_lh = title_size * 1.4
-    body_lh = body_size * 1.45
+    title_lh = title_size * 1.45
+    body_lh = body_size * 1.5
 
     total_title_h = len(title_lines) * title_lh
     total_body_h = len(body_lines) * body_lh
-    gap = 25 if total_title_h > 0 and total_body_h > 0 else 0
+    gap = 20 if total_title_h > 0 and total_body_h > 0 else 0
 
     total_content_h = total_title_h + gap + total_body_h
-
     start_y = 540 - (total_content_h / 2)
 
     d = ImageDraw.Draw(img)
     curr_y = start_y + (title_lh / 2)
 
-    # タイトル描画
+    # タイトル
     if title_lines:
         for line in title_lines:
             try:
@@ -317,7 +333,7 @@ def draw_text_page(img, title, text):
             except AttributeError:
                 w = f_title.getsize(line)[0]
 
-            draw_pink_underline(img, 540, curr_y + (title_size / 2) - 2, w, height=10)
+            draw_pink_underline(img, 540, curr_y + (title_size / 2) - 3, w, height=8)
             d.text((540, curr_y), line, fill=(30, 30, 30), font=f_title, anchor="mm")
             curr_y += title_lh
 
@@ -325,15 +341,15 @@ def draw_text_page(img, title, text):
     else:
         curr_y = start_y + (body_lh / 2)
 
-    # 本文描画
+    # 本文
     for line in body_lines:
         d.text((540, curr_y), line, fill=(40, 40, 40), font=f_body, anchor="mm")
         curr_y += body_lh
 
 def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項目2, second_type, 挿入画像, 詳細テキスト, ハッシュタグ):
-    f_org = get_font(30)
-    f_label = get_font(26)
-    f_val = get_font(30)
+    f_org = get_font(28)
+    f_label = get_font(24)
+    f_val = get_font(28)
 
     clean_org = 主催 or '（一社）島根県作業療法士会 事務局'
     display_subtitle = f"〜 {サブタイトル.strip(' 〜~')} 〜" if サブタイトル and サブタイトル.strip() else ""
@@ -345,13 +361,13 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
     if mode == "研修会情報":
         d1 = ImageDraw.Draw(img1)
-        d1.text((540, 310), clean_org, fill=(40, 40, 40), font=f_org, anchor="mm")
+        d1.text((540, 320), clean_org, fill=(50, 50, 50), font=f_org, anchor="mm")
 
-        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=480, initial_size=36, min_size=22, max_lines=3)
-        font_size = getattr(f_title, 'size', 30)
+        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=380, initial_size=32, min_size=20, max_lines=3)
+        font_size = getattr(f_title, 'size', 28)
         line_height = font_size * 1.4
         total_title_height = line_height * len(title_lines)
-        title_start_y = 380 + (line_height / 2)
+        title_start_y = 390 + (line_height / 2)
 
         for i, line in enumerate(title_lines):
             y = title_start_y + (i * line_height)
@@ -360,8 +376,8 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
         current_y = title_start_y + total_title_height + 15
 
         if display_subtitle:
-            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=460, initial_size=24, min_size=18, max_lines=2)
-            sub_line_height = getattr(f_sub_dynamic, 'size', 22) * 1.25
+            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=360, initial_size=22, min_size=16, max_lines=2)
+            sub_line_height = getattr(f_sub_dynamic, 'size', 20) * 1.3
             for line in sub_lines:
                 d1.text((540, current_y), line, fill=(60, 60, 60), font=f_sub_dynamic, anchor="mm")
                 current_y += sub_line_height
@@ -388,29 +404,29 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
     else:
         # お知らせ 1枚目
-        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=480, initial_size=36, min_size=22, max_lines=3)
-        font_size = getattr(f_title, 'size', 30)
+        title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=380, initial_size=32, min_size=20, max_lines=3)
+        font_size = getattr(f_title, 'size', 28)
         line_height = font_size * 1.45
-        total_height = line_height * len(title_lines) + 50
+        total_height = line_height * len(title_lines) + 40
 
-        sub_lines, f_sub_dynamic = ([], get_font(24))
+        sub_lines, f_sub_dynamic = ([], get_font(22))
         if display_subtitle:
-            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=460, initial_size=24, min_size=18, max_lines=2)
-            total_height += (getattr(f_sub_dynamic, 'size', 22) * 1.3 * len(sub_lines)) + 15
+            sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=360, initial_size=22, min_size=16, max_lines=2)
+            total_height += (getattr(f_sub_dynamic, 'size', 20) * 1.3 * len(sub_lines)) + 15
 
         start_y = 540 - (total_height / 2)
 
         d1 = ImageDraw.Draw(img1)
         d1.text((540, start_y), clean_org, fill=(50, 50, 50), font=f_org, anchor="mm")
 
-        curr_y = start_y + 50 + (line_height / 2)
+        curr_y = start_y + 45 + (line_height / 2)
         for line in title_lines:
             d1.text((540, curr_y), line, fill=(20, 20, 20), font=f_title, anchor="mm")
             curr_y += line_height
 
         if sub_lines:
             curr_y += 10
-            sub_lh = getattr(f_sub_dynamic, 'size', 22) * 1.3
+            sub_lh = getattr(f_sub_dynamic, 'size', 20) * 1.3
             for line in sub_lines:
                 d1.text((540, curr_y), line, fill=(70, 70, 70), font=f_sub_dynamic, anchor="mm")
                 curr_y += sub_lh
@@ -448,7 +464,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
 みなさまのご参加をお待ちしております！{tags_text}"""
     else:
-        summary_str = summarize_text_jp(詳細テキスト, max_chars=160) if 詳細テキスト else "詳細内容は画像をご確認ください。"
+        summary_str = summarize_text_jp(詳細テキスト, max_chars=140) if 詳細テキスト else "詳細内容は画像をご確認ください。"
         caption_text = f"""【{タイトル or 'お知らせ'}】
 {sub_text}
 📌 発信：{clean_org}

@@ -3,6 +3,7 @@ import io
 import re
 import math
 import requests
+import numpy as np
 from bs4 import BeautifulSoup
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
@@ -45,7 +46,7 @@ def clean_scraped_text(text):
     text = re.sub(r'https?://[^\s\u3000]+', '', text)
     noise_patterns = [
         r'会員の方へ', r'会員動向', r'Tweet', r'tweet', r'シェア', r'LINE', r'Facebook',
-        r'はてブ', r'ポケット', r'印刷', r'認知症の作業療法委員会', r'カテゴリー[:：]?', r'タグ[:：]?',
+        r'はてブ', r'ポケット', r'印刷', r'カテゴリー[:：]?', r'タグ[:：]?',
         r'ホーム', r'お知らせ', r'記事一覧', r'投稿日[:：]?', r'更新日[:：]?'
     ]
     for pat in noise_patterns:
@@ -57,14 +58,10 @@ def clean_scraped_text(text):
         l = line.strip()
         if not l:
             continue
-        if re.search(r'^(令和|平成|20\d\d年|\d{4}年)', l) or (re.search(r'@|小林央', l) and len(l) < 25):
-            if "参加" not in l and "開催" not in l:
-                continue
         cleaned_lines.append(l)
     return " ".join(cleaned_lines)
 
 def summarize_text_jp(text, target_chars=150):
-    """150文字程度を維持する"""
     clean_text = clean_scraped_text(text)
     if not clean_text:
         return ""
@@ -127,7 +124,6 @@ def smart_wrap(text, font, max_width):
     return lines
 
 def wrap_and_get_font(text, max_width=380, initial_size=28, min_size=18, max_lines=7):
-    """【文字を大きく】フォントサイズ全体を大きく、幅も広げた"""
     if not text:
         return [""], get_font(min_size)
 
@@ -155,6 +151,35 @@ def fetch_page_info(url):
         soup = BeautifulSoup(res.text, 'html.parser')
 
         raw_full_text = soup.get_text()
+
+        # 発信元の検出（日付の横の [ ] や ［ ］ を最優先で検出）
+        extracted_org = ""
+        # パターン: 2026年8月1日 [事務局] や 2026/08/01［認知症の作業療法委員会］等
+        date_bracket_match = re.search(r'\d{4}年\d{1,2}月\d{1,2}日\s*[\[［](.*?)[\]］]', raw_full_text)
+        if not date_bracket_match:
+            date_bracket_match = re.search(r'\d{4}[\/\.-]\d{1,2}[\/\.-]\d{1,2}\s*[\[［](.*?)[\]］]', raw_full_text)
+
+        if date_bracket_match:
+            org_name = date_bracket_match.group(1).strip()
+            if org_name:
+                if "作業療法士会" in org_name:
+                    extracted_org = org_name
+                else:
+                    extracted_org = f"（一社）島根県作業療法士会 {org_name}"
+
+        if not extracted_org:
+            if "認知症の作業療法委員会" in raw_full_text:
+                extracted_org = "（一社）島根県作業療法士会 認知症の作業療法委員会"
+            else:
+                comm_match = re.search(r'([^\s\n]+?委員会)', raw_full_text)
+                if comm_match:
+                    comm_name = comm_match.group(1).strip()
+                    if "作業療法士会" not in comm_name:
+                        extracted_org = f"（一社）島根県作業療法士会 {comm_name}"
+                    else:
+                        extracted_org = comm_name
+                else:
+                    extracted_org = "（一社）島根県作業療法士会 事務局"
 
         for tag in soup([
             'script', 'style', 'nav', 'header', 'footer', 'aside',
@@ -191,18 +216,6 @@ def fetch_page_info(url):
         extracted_date = date_match.group(2).strip() if date_match else ""
         extracted_place = place_match.group(2).strip() if place_match else ""
 
-        extracted_org = "（一社）島根県作業療法士会 事務局"
-        if "認知症の作業療法委員会" in raw_full_text:
-            extracted_org = "（一社）島根県作業療法士会 認知症の作業療法委員会"
-        else:
-            comm_match = re.search(r'([^\s\n]+?委員会)', raw_full_text)
-            if comm_match:
-                comm_name = comm_match.group(1).strip()
-                if "作業療法士会" not in comm_name:
-                    extracted_org = f"（一社）島根県作業療法士会 {comm_name}"
-                else:
-                    extracted_org = comm_name
-
         extracted_summary = summarize_text_jp(main_content.get_text(), target_chars=150)
 
         return {
@@ -219,27 +232,39 @@ def fetch_page_info(url):
             "title": "", "subtitle": "", "date": "", "place": "", "org": "", "summary": "", "error": str(e)
         }
 
-def draw_soft_rounded_text_base(img, center_y, lines_count, line_height, max_width=440, alpha=220, blur_radius=30, padding=(30, 30)):
-    """【意図通りに修正】花の背景と文字の間に、角丸でふんわりとした半透明の白いモヤ（座布団）を敷く。"""
-    overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
+def draw_clean_white_blur_base(img, center_y, total_height, max_width=440, max_alpha=220, blur_radius=25, padding=(30, 25)):
+    """
+    【絶対にくすまない真っ白アルファぼかし】
+    RGBは完全な純白(255, 255, 255)を固定保持し、Alpha（不透明度）のみをぼかすことで
+    灰色にくすむ現象を完全に防止した綺麗な白もやを描画します。
+    """
+    width, height = img.size
     
-    # 文字が存在する全体の高さを計算
-    height_span = lines_count * line_height
+    # 1. アルファ（不透明度）のマスク画像を生成
+    mask = Image.new('L', (width, height), 0)
+    draw_mask = ImageDraw.Draw(mask)
+    
     x1 = 540 - (max_width / 2)
     x2 = 540 + (max_width / 2)
-    y1 = center_y - (height_span / 2) - padding[1]
-    y2 = center_y + (height_span / 2) + padding[1]
+    y1 = center_y - (total_height / 2) - padding[1]
+    y2 = center_y + (total_height / 2) + padding[1]
 
-    # 真っ白で半透明（alpha）な角丸長方形を描く
-    draw.rounded_rectangle([x1, y1, x2, y2], radius=40, fill=(255, 255, 255, alpha))
+    # マスク上に角丸ボックスを白（最大不透明度）で描画
+    draw_mask.rounded_rectangle([x1, y1, x2, y2], radius=35, fill=max_alpha)
     
-    # ガウスぼかしを大きめにかけることで四角くならず「ふんわりした白いモヤ」にする
-    blurred_overlay = overlay.filter(ImageFilter.GaussianBlur(radius=blur_radius))
-    img.alpha_composite(blurred_overlay)
+    # アルファマスクだけにガウスぼかしをかける
+    blurred_mask = mask.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    
+    # 2. RGBが常に完全な「真っ白(255, 255, 255)」の画像を用意
+    white_surface = Image.new('RGB', (width, height), (255, 255, 255))
+    
+    # 3. 完全な白画像にぼかしたアルファマスクを適用（これで縁が灰色の絶対にくすまない白もやになる）
+    white_surface.putalpha(blurred_mask)
+    
+    # 4. 背景画像の上に合成
+    img.alpha_composite(white_surface)
 
 def get_bg(mode):
-    """【白い円の処理を削除】背景画像をそのまま読み込みリサイズのみ実行"""
     target_bg = BG_IMAGE_NOTICE if mode == "お知らせ" else BG_IMAGE_DEFAULT
     bg_p = os.path.join(BASE_DIR, target_bg)
     default_bg_p = os.path.join(BASE_DIR, BG_IMAGE_DEFAULT)
@@ -251,12 +276,10 @@ def get_bg(mode):
     else:
         bg_img = Image.new('RGB', (1080, 1080), color=(255, 255, 255))
     
-    # リサイズしてRGBAモードで操作するために変換
     bg_img = bg_img.convert('RGBA').resize((1080, 1080))
     return bg_img
 
 def draw_pink_underline(img, center_x, y_bottom, text_width, height=10):
-    """タイトル用のピンクマーカー線"""
     overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     x1 = center_x - (text_width / 2) - 8
@@ -269,7 +292,6 @@ def draw_pink_underline(img, center_x, y_bottom, text_width, height=10):
     img.alpha_composite(blurred_overlay)
 
 def draw_image_page(img, 挿入画像):
-    """画像ページ"""
     if 挿入画像 is not None:
         try:
             image_bytes = 挿入画像.getvalue()
@@ -289,7 +311,6 @@ def draw_image_page(img, 挿入画像):
             st.warning("画像の読み込みに失敗しました。")
 
 def draw_text_page(img, title, text):
-    """テキスト詳細ページ：花の背景と文字の間に「白いモヤ」を敷き、幅380pxに制限して文字を描画"""
     MAX_TEXT_WIDTH = 380
 
     title_lines, f_title = ([], get_font(26))
@@ -303,7 +324,6 @@ def draw_text_page(img, title, text):
     title_size = getattr(f_title, 'size', 26)
     body_size = getattr(f_body, 'size', 20)
 
-    # 行間を調整
     title_lh = title_size * 1.45
     body_lh = body_size * 1.5
 
@@ -314,14 +334,13 @@ def draw_text_page(img, title, text):
     total_content_h = total_title_h + gap + total_body_h
     start_y = 540 - (total_content_h / 2)
 
-    # 文字がある位置に合わせて背景に「ふんわりした白いモヤ」を描画
+    # 白くすみのない完全綺麗なモヤを描画
     center_y = start_y + (total_content_h / 2)
-    draw_soft_rounded_text_base(img, center_y, 1, total_content_h, max_width=420, alpha=220, blur_radius=30, padding=(30, 30))
+    draw_clean_white_blur_base(img, center_y, total_content_h, max_width=420, max_alpha=220, blur_radius=25)
 
     d = ImageDraw.Draw(img)
     curr_y = start_y + (title_lh / 2)
 
-    # タイトル
     if title_lines:
         for line in title_lines:
             try:
@@ -337,7 +356,6 @@ def draw_text_page(img, title, text):
     else:
         curr_y = start_y + (body_lh / 2)
 
-    # 本文（150文字程度）
     for line in body_lines:
         d.text((540, curr_y), line, fill=(40, 40, 40), font=f_body, anchor="mm")
         curr_y += body_lh
@@ -357,7 +375,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
     if mode == "研修会情報":
         total_content_h = 550
-        draw_soft_rounded_text_base(img1, 540, 1, total_content_h, max_width=440, alpha=220, blur_radius=30, padding=(30, 30))
+        draw_clean_white_blur_base(img1, 540, total_content_h, max_width=440, max_alpha=220, blur_radius=25)
 
         d1 = ImageDraw.Draw(img1)
         d1.text((540, 320), clean_org, fill=(50, 50, 50), font=f_org, anchor="mm")
@@ -415,7 +433,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
         start_y = 540 - (total_height / 2)
 
-        draw_soft_rounded_text_base(img1, 540, 1, total_height, max_width=440, alpha=220, blur_radius=30, padding=(30, 30))
+        draw_clean_white_blur_base(img1, 540, total_height, max_width=440, max_alpha=220, blur_radius=25)
 
         d1 = ImageDraw.Draw(img1)
         d1.text((540, start_y), clean_org, fill=(50, 50, 50), font=f_org, anchor="mm")
@@ -494,7 +512,6 @@ st.divider()
 
 col1, col2 = st.columns([1, 1])
 
-# Session Stateの初期化
 if "auto_org" not in st.session_state:
     st.session_state["auto_org"] = "（一社）島根県作業療法士会 事務局"
 if "auto_title" not in st.session_state:
@@ -510,7 +527,7 @@ if "auto_summary" not in st.session_state:
 
 with col1:
     with st.expander("🔗 Webページ（URL）から情報を自動読み込み", expanded=False):
-        input_url = st.text_input("研修会やお知らせページのURLを入力", placeholder="https://shimane-ot.jp/posts/123")
+        input_url = st.text_input("研修会やお知らせページのURLを入力", placeholder="https://shimane-ot.jp/info/article-62394/")
         if st.button("🌐 情報を自動取得する", use_container_width=True):
             if input_url:
                 with st.spinner("ページ情報を取得中..."):

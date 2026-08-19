@@ -44,8 +44,9 @@ def clean_scraped_text(text):
     if not text:
         return ""
     text = re.sub(r'https?://[^\s\u3000]+', '', text)
+    # エラー原因となっていた r me' を正しく修正
     noise_patterns = [
-        r'会員の方へ', r'会員動向', r'Tweet', r'tweet', r me', r'シェア', r'LINE', r'Facebook',
+        r'会員の方へ', r'会員動向', r'Tweet', r'tweet', r'シェア', r'LINE', r'Facebook',
         r'はてブ', r'ポケット', r'印刷', r'カテゴリー[:：]?', r'タグ[:：]?',
         r'ホーム', r'お知らせ', r'記事一覧', r'投稿日[:：]?', r'更新日[:：]?'
     ]

@@ -44,7 +44,6 @@ def clean_scraped_text(text):
     if not text:
         return ""
     text = re.sub(r'https?://[^\s\u3000]+', '', text)
-    # エラー原因となっていた r me' を正しく修正
     noise_patterns = [
         r'会員の方へ', r'会員動向', r'Tweet', r'tweet', r'シェア', r'LINE', r'Facebook',
         r'はてブ', r'ポケット', r'印刷', r'カテゴリー[:：]?', r'タグ[:：]?',
@@ -147,7 +146,6 @@ def wrap_and_get_font(text, max_width=750, initial_size=36, min_size=20, max_lin
     return lines[:max_lines], font
 
 def fetch_page_info(url):
-    """Webページのスクレイピング処理（日時・場所の精度改善版）"""
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -216,16 +214,13 @@ def fetch_page_info(url):
             title = bracket_match.group(1).strip(" ［］[]「」『』【】")
             extracted_subtitle = bracket_match.group(2).strip(" ［］[]「」『』【】")
 
-        # --- 日時・場所の取得精度向上 ---
         extracted_date = ""
         extracted_place = ""
 
-        # 日時：会場や場所の手前まで取得
         date_match = re.search(r'(日時|開催日時)[:：\s]*([^\n\r]+?)(?=(会場|場所|【|$))', raw_full_text)
         if date_match:
             extracted_date = date_match.group(2).strip()
 
-        # 会場・場所：「で開催します」などの不要な挨拶文を除去
         place_match = re.search(r'(場所|開催場所|会場)[:：\s]*([^\n\r]+)', raw_full_text)
         if place_match:
             p_text = place_match.group(2).strip()
@@ -383,7 +378,6 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
             sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=680, initial_size=26, min_size=18, max_lines=2)
             sub_total_h = (getattr(f_sub_dynamic, 'size', 26) * 1.3 * len(sub_lines)) + 15
 
-        # 日時・場所の可変長対応
         date_lines, f_val = wrap_and_get_font(項目1 or "", max_width=650, initial_size=32, min_size=20, max_lines=2)
         place_lines, _ = wrap_and_get_font(項目2 or "", max_width=650, initial_size=32, min_size=20, max_lines=2)
 

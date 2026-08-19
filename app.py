@@ -45,7 +45,7 @@ def clean_scraped_text(text):
         return ""
     text = re.sub(r'https?://[^\s\u3000]+', '', text)
     noise_patterns = [
-        r'会員の方へ', r'会員動向', r'Tweet', r'tweet', r'シェア', r'LINE', r'Facebook',
+        r'会員の方へ', r'会員動向', r'Tweet', r'tweet', r me', r'シェア', r'LINE', r'Facebook',
         r'はてブ', r'ポケット', r'印刷', r'カテゴリー[:：]?', r'タグ[:：]?',
         r'ホーム', r'お知らせ', r'記事一覧', r'投稿日[:：]?', r'更新日[:：]?'
     ]
@@ -146,6 +146,7 @@ def wrap_and_get_font(text, max_width=750, initial_size=36, min_size=20, max_lin
     return lines[:max_lines], font
 
 def fetch_page_info(url):
+    """Webページのスクレイピング処理（日時・場所の精度改善版）"""
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -214,11 +215,21 @@ def fetch_page_info(url):
             title = bracket_match.group(1).strip(" ［］[]「」『』【】")
             extracted_subtitle = bracket_match.group(2).strip(" ［］[]「」『』【】")
 
-        date_match = re.search(r'(日時|開催日時)[:：\s]*([^\n]+)', raw_full_text)
-        place_match = re.search(r'(場所|開催場所|会場)[:：\s]*([^\n]+)', raw_full_text)
+        # --- 日時・場所の取得精度向上 ---
+        extracted_date = ""
+        extracted_place = ""
 
-        extracted_date = date_match.group(2).strip() if date_match else ""
-        extracted_place = place_match.group(2).strip() if place_match else ""
+        # 日時：会場や場所の手前まで取得
+        date_match = re.search(r'(日時|開催日時)[:：\s]*([^\n\r]+?)(?=(会場|場所|【|$))', raw_full_text)
+        if date_match:
+            extracted_date = date_match.group(2).strip()
+
+        # 会場・場所：「で開催します」などの不要な挨拶文を除去
+        place_match = re.search(r'(場所|開催場所|会場)[:：\s]*([^\n\r]+)', raw_full_text)
+        if place_match:
+            p_text = place_match.group(2).strip()
+            p_text = re.sub(r'(で開催|にて開催|でおこないます).*$', '', p_text).strip()
+            extracted_place = p_text
 
         extracted_summary = summarize_text_jp(main_content.get_text(), target_chars=160)
 
@@ -237,9 +248,7 @@ def fetch_page_info(url):
         }
 
 def draw_clean_white_blur_base(img, center_y, total_height, box_width=850, max_alpha=230, blur_radius=30, padding=(60, 60)):
-    """白ぼかし背景シートを描画"""
     width, height = img.size
-    
     mask = Image.new('L', (width, height), 0)
     draw_mask = ImageDraw.Draw(mask)
     
@@ -249,12 +258,10 @@ def draw_clean_white_blur_base(img, center_y, total_height, box_width=850, max_a
     y2 = center_y + (total_height / 2) + padding[1]
 
     draw_mask.rounded_rectangle([x1, y1, x2, y2], radius=45, fill=max_alpha)
-    
     blurred_mask = mask.filter(ImageFilter.GaussianBlur(radius=blur_radius))
     
     white_surface = Image.new('RGB', (width, height), (255, 255, 255))
     white_surface.putalpha(blurred_mask)
-    
     img.alpha_composite(white_surface)
 
 def get_bg(mode):
@@ -304,7 +311,6 @@ def draw_image_page(img, 挿入画像):
             st.warning("画像の読み込みに失敗しました。")
 
 def draw_text_page(img, title, text):
-    """お知らせ用 テキスト詳細ページ（文字大＆シート850px）"""
     MAX_TEXT_WIDTH = 780
 
     title_lines, f_title = ([], get_font(34))
@@ -328,14 +334,12 @@ def draw_text_page(img, title, text):
     total_content_h = total_title_h + gap + total_body_h
     start_y = 540 - (total_content_h / 2)
 
-    # お知らせ用の大きな白ぼかしシート (850px)
     center_y = start_y + (total_content_h / 2)
     draw_clean_white_blur_base(img, center_y, total_content_h, box_width=850, max_alpha=230, blur_radius=30, padding=(60, 50))
 
     d = ImageDraw.Draw(img)
     curr_y = start_y + (title_lh / 2)
 
-    # タイトル
     if title_lines:
         for line in title_lines:
             try:
@@ -351,7 +355,6 @@ def draw_text_page(img, title, text):
     else:
         curr_y = start_y + (body_lh / 2)
 
-    # 本文
     for line in body_lines:
         d.text((540, curr_y), line, fill=(40, 40, 40), font=f_body, anchor="mm")
         curr_y += body_lh
@@ -359,18 +362,15 @@ def draw_text_page(img, title, text):
 def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項目2, second_type, 挿入画像, 詳細テキスト, ハッシュタグ):
     f_org = get_font(30)
     f_label = get_font(30)
-    f_val = get_font(36)
 
     clean_org = 主催 or '（一社）島根県作業療法士会 事務局'
     display_subtitle = f"〜 {サブタイトル.strip(' 〜~')} 〜" if サブタイトル and サブタイトル.strip() else ""
 
     generated_images = []
 
-    # 1枚目生成
     img1 = get_bg(mode)
 
     if mode == "研修会情報":
-        # ---------------- 研修会情報（従来バランス） ----------------
         title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=680, initial_size=36, min_size=24, max_lines=3)
         font_size = getattr(f_title, 'size', 36)
         line_height = font_size * 1.35
@@ -382,11 +382,18 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
             sub_lines, f_sub_dynamic = wrap_and_get_font(display_subtitle, max_width=680, initial_size=26, min_size=18, max_lines=2)
             sub_total_h = (getattr(f_sub_dynamic, 'size', 26) * 1.3 * len(sub_lines)) + 15
 
-        info_h = 200 if (項目2 and 項目2.strip()) else 110
+        # 日時・場所の可変長対応
+        date_lines, f_val = wrap_and_get_font(項目1 or "", max_width=650, initial_size=32, min_size=20, max_lines=2)
+        place_lines, _ = wrap_and_get_font(項目2 or "", max_width=650, initial_size=32, min_size=20, max_lines=2)
+
+        v_lh = getattr(f_val, 'size', 32) * 1.3
+        info_h = (len(date_lines) * v_lh) + 40
+        if 項目2 and 項目2.strip():
+            info_h += (len(place_lines) * v_lh) + 60
+
         total_content_h = 50 + total_title_height + sub_total_h + info_h
         
-        # 研修会用標準シート (700px)
-        draw_clean_white_blur_base(img1, 540, total_content_h, box_width=700, max_alpha=200, blur_radius=20, padding=(40, 40))
+        draw_clean_white_blur_base(img1, 540, total_content_h, box_width=720, max_alpha=200, blur_radius=20, padding=(40, 40))
 
         d1 = ImageDraw.Draw(img1)
         start_y = 540 - (total_content_h / 2) + 20
@@ -407,14 +414,16 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
         curr_y += 15
         d1.text((540, curr_y), "【日時】", fill=(80, 80, 80), font=f_label, anchor="mm")
-        curr_y += 35
-        d1.text((540, curr_y), 項目1 or "", fill=(30, 30, 30), font=f_val, anchor="mm")
+        for line in date_lines:
+            curr_y += 35
+            d1.text((540, curr_y), line, fill=(30, 30, 30), font=f_val, anchor="mm")
 
         if 項目2 and 項目2.strip():
-            curr_y += 55
+            curr_y += 45
             d1.text((540, curr_y), "【場所】", fill=(80, 80, 80), font=f_label, anchor="mm")
-            curr_y += 35
-            d1.text((540, curr_y), 項目2 or "", fill=(30, 30, 30), font=f_val, anchor="mm")
+            for line in place_lines:
+                curr_y += 35
+                d1.text((540, curr_y), line, fill=(30, 30, 30), font=f_val, anchor="mm")
 
         generated_images.append(img1.convert('RGB'))
 
@@ -423,7 +432,7 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
         generated_images.append(img2.convert('RGB'))
 
     else:
-        # ---------------- お知らせ（文字拡大＆ぼかし可視化） ----------------
+        # お知らせモード
         title_lines, f_title = wrap_and_get_font(タイトル or "", max_width=780, initial_size=46, min_size=32, max_lines=3)
         font_size = getattr(f_title, 'size', 46)
         line_height = font_size * 1.45
@@ -436,7 +445,6 @@ def generate_posts(mode, 主催, タイトル, サブタイトル, 項目1, 項�
 
         start_y = 540 - (total_height / 2)
 
-        # お知らせ専用：横幅850pxの大きな白ぼかしシート
         draw_clean_white_blur_base(img1, 540, total_height, box_width=850, max_alpha=230, blur_radius=30, padding=(60, 50))
 
         d1 = ImageDraw.Draw(img1)
